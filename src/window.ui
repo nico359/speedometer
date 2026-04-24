@@ -4,8 +4,8 @@
   <requires lib="Adw" version="1.0"/>
   <template class="SpeedometerWindow" parent="AdwApplicationWindow">
     <property name="title" translatable="yes">Speedometer</property>
-    <property name="default-width">800</property>
-    <property name="default-height">600</property>
+    <property name="default-width">360</property>
+    <property name="default-height">720</property>
     <property name="content">
       <object class="AdwToolbarView">
         <child type="top">
@@ -21,11 +21,9 @@
           </object>
         </child>
         <property name="content">
-          <object class="GtkLabel" id="label">
-            <property name="label" translatable="yes">Hello, World!</property>
-            <style>
-              <class name="title-1"/>
-            </style>
+          <object class="GtkDrawingArea" id="speedometer_area">
+            <property name="hexpand">True</property>
+            <property name="vexpand">True</property>
           </object>
         </property>
       </object>
@@ -33,14 +31,6 @@
   </template>
   <menu id="primary_menu">
     <section>
-      <item>
-        <attribute name="label" translatable="yes">_Preferences</attribute>
-        <attribute name="action">app.preferences</attribute>
-      </item>
-      <item>
-        <attribute name="label" translatable="yes">_Keyboard Shortcuts</attribute>
-        <attribute name="action">app.shortcuts</attribute>
-      </item>
       <item>
         <attribute name="label" translatable="yes">_About Speedometer</attribute>
         <attribute name="action">app.about</attribute>

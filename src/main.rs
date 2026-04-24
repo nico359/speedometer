@@ -20,6 +20,7 @@
 
 mod application;
 mod config;
+mod location;
 mod window;
 
 use self::application::SpeedometerApplication;
