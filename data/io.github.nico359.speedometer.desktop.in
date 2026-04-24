@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Speedometer
+Exec=speedometer
+Icon=io.github.nico359.speedometer
+Terminal=false
+Type=Application
+Categories=Utility;
+Keywords=GTK;
+StartupNotify=true
+DBusActivatable=true

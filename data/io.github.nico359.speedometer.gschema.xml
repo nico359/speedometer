@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="speedometer">
+	<schema id="io.github.nico359.speedometer" path="/io/github/nico359/speedometer/">
+	</schema>
+</schemalist>

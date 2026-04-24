@@ -1,0 +1,6 @@
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically.
+data/io.github.nico359.speedometer.desktop.in
+data/io.github.nico359.speedometer.metainfo.xml.in
+data/io.github.nico359.speedometer.gschema.xml
+src/window.ui
