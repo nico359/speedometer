@@ -100,13 +100,21 @@ impl SpeedometerApplication {
         let about = adw::AboutDialog::builder()
             .application_name("Speedometer")
             .application_icon("io.github.nico359.speedometer")
-            .developer_name("Unknown")
+            .developer_name("nico359")
             .version(VERSION)
-            .developers(vec!["Unknown"])
-            // Translators: Replace "translator-credits" with your name/username, and optionally an email or URL.
+            .developers(vec!["nico359", "GitHub Copilot CLI (Claude)"])
+            .comments("A GPS speedometer for mobile Linux.\n\nBuilt with the assistance of AI (GitHub Copilot CLI, powered by Claude).")
+            .website("https://github.com/nico359/speedometer")
+            .issue_url("https://github.com/nico359/speedometer/issues")
+            .license_type(gtk::License::Gpl30)
             .translator_credits(&gettext("translator-credits"))
-            .copyright("© 2026 Unknown")
+            .copyright("© 2026 nico359")
             .build();
+
+        about.add_credit_section(
+            Some(&gettext("Inspired by")),
+            &["Movens by wilfridd https://open-store.io/app/movens.wilfridd"],
+        );
 
         about.present(Some(&window));
     }
