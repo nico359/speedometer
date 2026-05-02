@@ -273,12 +273,15 @@ fn draw_speedometer(
     cr.set_source_rgb(0.30, 0.30, 0.32);
     cr.fill().ok();
 
-    // ── Large speed readout ───────────────────────────────────────────────
+    // ── Large speed readout (below the dial) ─────────────────────────────
     let speed_str = if has_fix {
         format!("{:.0}", speed_clamped)
     } else {
         "--".to_string()
     };
+
+    // Anchor point just below the dial background circle.
+    let below_dial = cy + size * 0.62;
 
     cr.set_source_rgb(1.0, 1.0, 1.0);
     cr.set_font_size(size * 0.20);
@@ -290,7 +293,7 @@ fn draw_speedometer(
     if let Ok(ext) = cr.text_extents(&speed_str) {
         cr.move_to(
             cx - ext.width() / 2.0 - ext.x_bearing(),
-            cy + size * 0.10,
+            below_dial,
         );
         cr.show_text(&speed_str).ok();
     }
@@ -304,7 +307,7 @@ fn draw_speedometer(
         gtk::cairo::FontWeight::Normal,
     );
     if let Ok(ext) = cr.text_extents("km/h") {
-        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy + size * 0.20);
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), below_dial + size * 0.10);
         cr.show_text("km/h").ok();
     }
 
