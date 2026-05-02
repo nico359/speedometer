@@ -28,6 +28,8 @@ pub struct LocationData {
     pub speed_kmh: f64,
     /// Altitude in metres above sea level (0.0 when unavailable).
     pub altitude_m: f64,
+    /// Horizontal accuracy in metres reported by the portal.
+    pub accuracy_m: f64,
     /// True once the portal has delivered at least one valid location fix.
     pub has_fix: bool,
 }
@@ -75,9 +77,12 @@ async fn watch_location(sender: Sender<LocationData>) -> ashpd::Result<()> {
         // altitude() returns None when the portal reports the sentinel value.
         let altitude_m = location.altitude().unwrap_or(0.0);
 
+        let accuracy_m = location.accuracy().max(0.0);
+
         sender.send_blocking(LocationData {
             speed_kmh,
             altitude_m,
+            accuracy_m,
             has_fix: true,
         }).ok();
     }

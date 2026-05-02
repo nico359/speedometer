@@ -51,6 +51,7 @@ mod imp {
 
         pub speed: Cell<f64>,
         pub altitude: Cell<f64>,
+        pub accuracy: Cell<f64>,
         pub has_fix: Cell<bool>,
     }
 
@@ -83,6 +84,7 @@ mod imp {
                     draw_speedometer(
                         imp.speed.get(),
                         imp.altitude.get(),
+                        imp.accuracy.get(),
                         imp.has_fix.get(),
                         cr,
                         width,
@@ -105,6 +107,7 @@ mod imp {
                         let imp = win.imp();
                         imp.speed.set(data.speed_kmh);
                         imp.altitude.set(data.altitude_m);
+                        imp.accuracy.set(data.accuracy_m);
                         imp.has_fix.set(data.has_fix);
                         imp.speedometer_area.queue_draw();
                     }
@@ -139,6 +142,7 @@ impl SpeedometerWindow {
 fn draw_speedometer(
     speed: f64,
     altitude: f64,
+    accuracy: f64,
     has_fix: bool,
     cr: &gtk::cairo::Context,
     width: i32,
@@ -305,16 +309,18 @@ fn draw_speedometer(
     }
 
     // ── GPS status indicator ──────────────────────────────────────────────
-    let dot_r = size * 0.024;
-    // Position the dot at the top of the dial, slightly right of centre.
-    let dot_cx = cx + size * 0.14;
-    let dot_cy = cy - size * 0.26;
+    let dot_r = size * 0.022;
+    // Use window height so the indicator sits near the top on portrait phones.
+    let dot_cx = cx;
+    let dot_cy = h * 0.08;
 
     cr.arc(dot_cx, dot_cy, dot_r, 0.0, 2.0 * PI);
-    if has_fix {
-        cr.set_source_rgb(0.18, 0.85, 0.30);
+    if !has_fix {
+        cr.set_source_rgb(0.90, 0.20, 0.20);   // red  – no data
+    } else if accuracy < 10.0 {
+        cr.set_source_rgb(0.18, 0.85, 0.30);   // green – good fix
     } else {
-        cr.set_source_rgb(0.90, 0.58, 0.10);
+        cr.set_source_rgb(0.95, 0.78, 0.10);   // yellow – coarse fix
     }
     cr.fill().ok();
 
@@ -325,9 +331,45 @@ fn draw_speedometer(
         gtk::cairo::FontSlant::Normal,
         gtk::cairo::FontWeight::Normal,
     );
-    let gps_label = if has_fix { "GPS" } else { "searching…" };
-    cr.move_to(dot_cx + dot_r * 1.6, dot_cy + size * 0.016);
-    cr.show_text(gps_label).ok();
+    let gps_label = if has_fix {
+        if accuracy >= 1000.0 {
+            format!("±{:.1} km", accuracy / 1000.0)
+        } else {
+            format!("±{:.0} m", accuracy)
+        }
+    } else {
+        "No signal".to_string()
+    };
+    // Centre the accuracy/status label horizontally below the dot.
+    let line_gap = size * 0.052;
+    let label_y = dot_cy + dot_r + line_gap;
+    if let Ok(ext) = cr.text_extents(&gps_label) {
+        cr.move_to(
+            dot_cx - ext.width() / 2.0 - ext.x_bearing(),
+            label_y,
+        );
+        cr.show_text(&gps_label).ok();
+    }
+
+    // Hint text on a second line.
+    let hint: Option<&str> = if !has_fix {
+        Some("Is GPS enabled?")
+    } else if accuracy >= 10.0 {
+        Some("Speed cannot be determined at this accuracy")
+    } else {
+        None
+    };
+    if let Some(hint_str) = hint {
+        cr.set_font_size(size * 0.034);
+        cr.set_source_rgb(0.45, 0.47, 0.50);
+        if let Ok(ext) = cr.text_extents(hint_str) {
+            cr.move_to(
+                dot_cx - ext.width() / 2.0 - ext.x_bearing(),
+                label_y + line_gap,
+            );
+            cr.show_text(hint_str).ok();
+        }
+    }
 
     // ── Altitude ──────────────────────────────────────────────────────────
     if has_fix {
