@@ -94,22 +94,21 @@ mod imp {
             // Create a glib channel so the GPS background thread can push
             // updates into the GTK main loop safely.
             let (sender, receiver) =
-                glib::MainContext::channel::<crate::location::LocationData>(
-                    glib::Priority::DEFAULT,
-                );
+                async_channel::bounded::<crate::location::LocationData>(1);
 
             crate::location::start_location_watching(sender);
 
             let win_weak2 = obj.downgrade();
-            receiver.attach(None, move |data| {
-                if let Some(win) = win_weak2.upgrade() {
-                    let imp = win.imp();
-                    imp.speed.set(data.speed_kmh);
-                    imp.altitude.set(data.altitude_m);
-                    imp.has_fix.set(data.has_fix);
-                    imp.speedometer_area.queue_draw();
+            glib::MainContext::default().spawn_local(async move {
+                while let Ok(data) = receiver.recv().await {
+                    if let Some(win) = win_weak2.upgrade() {
+                        let imp = win.imp();
+                        imp.speed.set(data.speed_kmh);
+                        imp.altitude.set(data.altitude_m);
+                        imp.has_fix.set(data.has_fix);
+                        imp.speedometer_area.queue_draw();
+                    }
                 }
-                glib::ControlFlow::Continue
             });
         }
     }
@@ -231,8 +230,8 @@ fn draw_speedometer(
         let label = v.to_string();
         if let Ok(ext) = cr.text_extents(&label) {
             cr.move_to(
-                lx - ext.width / 2.0 - ext.x_bearing,
-                ly + ext.height / 2.0,
+                lx - ext.width() / 2.0 - ext.x_bearing(),
+                ly + ext.height() / 2.0,
             );
             cr.show_text(&label).ok();
         }
@@ -286,7 +285,7 @@ fn draw_speedometer(
     );
     if let Ok(ext) = cr.text_extents(&speed_str) {
         cr.move_to(
-            cx - ext.width / 2.0 - ext.x_bearing,
+            cx - ext.width() / 2.0 - ext.x_bearing(),
             cy + size * 0.10,
         );
         cr.show_text(&speed_str).ok();
@@ -301,7 +300,7 @@ fn draw_speedometer(
         gtk::cairo::FontWeight::Normal,
     );
     if let Ok(ext) = cr.text_extents("km/h") {
-        cr.move_to(cx - ext.width / 2.0 - ext.x_bearing, cy + size * 0.20);
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy + size * 0.20);
         cr.show_text("km/h").ok();
     }
 
@@ -341,7 +340,7 @@ fn draw_speedometer(
             gtk::cairo::FontWeight::Normal,
         );
         if let Ok(ext) = cr.text_extents(&alt_str) {
-            cr.move_to(cx - ext.width / 2.0 - ext.x_bearing, cy + size * 0.30);
+            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy + size * 0.30);
             cr.show_text(&alt_str).ok();
         }
     }

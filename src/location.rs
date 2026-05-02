@@ -19,8 +19,8 @@
  */
 
 use ashpd::desktop::location::{Accuracy, CreateSessionOptions, LocationProxy};
+use async_channel::Sender;
 use futures_util::StreamExt;
-use gtk::glib;
 
 /// Data sent from the GPS background thread to the UI thread.
 pub struct LocationData {
@@ -34,7 +34,7 @@ pub struct LocationData {
 
 /// Spawn a background thread running a Tokio current-thread runtime that
 /// subscribes to the XDG Location Portal and forwards updates via `sender`.
-pub fn start_location_watching(sender: glib::Sender<LocationData>) {
+pub fn start_location_watching(sender: Sender<LocationData>) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -49,7 +49,7 @@ pub fn start_location_watching(sender: glib::Sender<LocationData>) {
     });
 }
 
-async fn watch_location(sender: glib::Sender<LocationData>) -> ashpd::Result<()> {
+async fn watch_location(sender: Sender<LocationData>) -> ashpd::Result<()> {
     let proxy = LocationProxy::new().await?;
 
     let session = proxy
@@ -75,11 +75,11 @@ async fn watch_location(sender: glib::Sender<LocationData>) -> ashpd::Result<()>
         // altitude() returns None when the portal reports the sentinel value.
         let altitude_m = location.altitude().unwrap_or(0.0);
 
-        let _ = sender.send(LocationData {
+        sender.send_blocking(LocationData {
             speed_kmh,
             altitude_m,
             has_fix: true,
-        });
+        }).ok();
     }
 
     Ok(())
