@@ -21,6 +21,14 @@
   <url type="vcs-browser">https://github.com/nico359/speedometer</url>
   <url type="bugtracker">https://github.com/nico359/speedometer/issues</url>
 
+  <recommends>
+    <display_length compare="ge">360</display_length>
+    <control>touch</control>
+  </recommends>
+  <supports>
+    <control>touch</control>
+  </supports>
+
   <translation type="gettext">speedometer</translation>
   <launchable type="desktop-id">io.github.nico359.speedometer.desktop</launchable>
   <content_rating type="oars-1.1" />
