@@ -30,7 +30,9 @@ mod imp {
     use super::*;
 
     #[derive(Debug, Default)]
-    pub struct SpeedometerApplication {}
+    pub struct SpeedometerApplication {
+        pub inhibit_cookie: std::cell::Cell<u32>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for SpeedometerApplication {
@@ -49,10 +51,6 @@ mod imp {
     }
 
     impl ApplicationImpl for SpeedometerApplication {
-        // We connect to the activate callback to create a window when the application
-        // has been launched. Additionally, this callback notifies us when the user
-        // tries to launch a "second instance" of the application. When they try
-        // to do that, we'll just present any existing window.
         fn activate(&self) {
             let application = self.obj();
             // Get the current window or create one if necessary
@@ -61,8 +59,29 @@ mod imp {
                 window.upcast()
             });
 
+            // Inhibit suspend and idle so the screen stays on while navigating.
+            // gtk::Application::inhibit() handles the XDG portal correctly and
+            // requires a valid window handle, which we have at this point.
+            if self.inhibit_cookie.get() == 0 {
+                let cookie = application.inhibit(
+                    Some(&window),
+                    gtk::ApplicationInhibitFlags::SUSPEND | gtk::ApplicationInhibitFlags::IDLE,
+                    Some("Speedometer is active"),
+                );
+                self.inhibit_cookie.set(cookie);
+            }
+
             // Ask the window manager/compositor to present the window
             window.present();
+        }
+
+        fn shutdown(&self) {
+            let cookie = self.inhibit_cookie.get();
+            if cookie != 0 {
+                self.obj().uninhibit(cookie);
+                self.inhibit_cookie.set(0);
+            }
+            self.parent_shutdown();
         }
     }
 
