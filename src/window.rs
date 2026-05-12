@@ -20,10 +20,12 @@
 
 use std::cell::Cell;
 use std::f64::consts::PI;
+use std::time::Instant;
 
 use gtk::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use std::cell::RefCell;
 
 // ── Drawing constants ────────────────────────────────────────────────────────
 
@@ -38,6 +40,9 @@ const SWEEP_DEG: f64 = 240.0;
 /// Maximum speed shown on the dial.
 const MAX_SPEED: f64 = 200.0;
 
+/// Duration of the needle lerp animation in seconds.
+const ANIM_DURATION_S: f64 = 0.4;
+
 // ── Subclass ─────────────────────────────────────────────────────────────────
 
 mod imp {
@@ -49,10 +54,15 @@ mod imp {
         #[template_child]
         pub speedometer_area: TemplateChild<gtk::DrawingArea>,
 
-        pub speed: Cell<f64>,
         pub altitude: Cell<f64>,
         pub accuracy: Cell<f64>,
         pub has_fix: Cell<bool>,
+
+        // Speed needle animation state
+        pub speed_displayed: Cell<f64>,   // current lerped value drawn on screen
+        pub speed_target:    Cell<f64>,   // latest value from GPS
+        pub speed_anim_from: Cell<f64>,   // value at the start of the current lerp
+        pub speed_anim_start: RefCell<Option<Instant>>,
     }
 
     #[glib::object_subclass]
@@ -82,7 +92,7 @@ mod imp {
                 if let Some(win) = win_weak.upgrade() {
                     let imp = win.imp();
                     draw_speedometer(
-                        imp.speed.get(),
+                        imp.speed_displayed.get(),
                         imp.altitude.get(),
                         imp.accuracy.get(),
                         imp.has_fix.get(),
@@ -105,12 +115,30 @@ mod imp {
                 while let Ok(data) = receiver.recv().await {
                     if let Some(win) = win_weak2.upgrade() {
                         let imp = win.imp();
-                        imp.speed.set(data.speed_kmh);
+                        set_speed_target(imp, data.speed_kmh);
                         imp.altitude.set(data.altitude_m);
                         imp.accuracy.set(data.accuracy_m);
                         imp.has_fix.set(data.has_fix);
-                        imp.speedometer_area.queue_draw();
+                        // The ticker drives redraws; no queue_draw() needed here.
                     }
+                }
+            });
+
+            // 60 fps ticker: advance the speed lerp and redraw.
+            let win_weak3 = obj.downgrade();
+            glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                if let Some(win) = win_weak3.upgrade() {
+                    let imp = win.imp();
+                    let target = imp.speed_target.get();
+                    let from   = imp.speed_anim_from.get();
+                    let t = imp.speed_anim_start.borrow().map_or(1.0, |start| {
+                        (start.elapsed().as_secs_f64() / ANIM_DURATION_S).min(1.0)
+                    });
+                    imp.speed_displayed.set(from + (target - from) * t);
+                    imp.speedometer_area.queue_draw();
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
                 }
             });
         }
@@ -134,6 +162,18 @@ impl SpeedometerWindow {
             .property("application", application)
             .build()
     }
+}
+
+// ── Speed animation helper ────────────────────────────────────────────────────
+
+/// Update the needle animation target. Snapshots the current interpolated
+/// position as the new `from` so mid-animation transitions are seamless.
+fn set_speed_target(imp: &imp::SpeedometerWindow, new_target: f64) {
+    // Sample the current displayed value as the new animation start point.
+    let current = imp.speed_displayed.get();
+    imp.speed_anim_from.set(current);
+    imp.speed_target.set(new_target);
+    *imp.speed_anim_start.borrow_mut() = Some(Instant::now());
 }
 
 // ── Cairo drawing ─────────────────────────────────────────────────────────────
