@@ -20,12 +20,10 @@
 
 use std::cell::Cell;
 use std::f64::consts::PI;
-use std::time::Instant;
 
 use gtk::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
-use std::cell::RefCell;
 
 // ── Drawing constants ────────────────────────────────────────────────────────
 
@@ -40,8 +38,9 @@ const SWEEP_DEG: f64 = 240.0;
 /// Maximum speed shown on the dial.
 const MAX_SPEED: f64 = 200.0;
 
-/// Duration of the needle lerp animation in seconds.
-const ANIM_DURATION_S: f64 = 0.4;
+/// EMA smoothing factor per 16 ms tick (0 = frozen, 1 = instant).
+/// 0.08 gives a ~120 ms half-life — reacts quickly then decelerates naturally.
+const EMA_ALPHA: f64 = 0.08;
 
 // ── Subclass ─────────────────────────────────────────────────────────────────
 
@@ -58,11 +57,9 @@ mod imp {
         pub accuracy: Cell<f64>,
         pub has_fix: Cell<bool>,
 
-        // Speed needle animation state
-        pub speed_displayed: Cell<f64>,   // current lerped value drawn on screen
-        pub speed_target:    Cell<f64>,   // latest value from GPS
-        pub speed_anim_from: Cell<f64>,   // value at the start of the current lerp
-        pub speed_anim_start: RefCell<Option<Instant>>,
+        // Speed needle animation state (exponential moving average)
+        pub speed_displayed: Cell<f64>,  // current smoothed value drawn on screen
+        pub speed_target:    Cell<f64>,  // latest value from GPS
     }
 
     #[glib::object_subclass]
@@ -124,17 +121,15 @@ mod imp {
                 }
             });
 
-            // 60 fps ticker: advance the speed lerp and redraw.
+            // 60 fps ticker: advance the EMA and redraw.
             let win_weak3 = obj.downgrade();
             glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
                 if let Some(win) = win_weak3.upgrade() {
                     let imp = win.imp();
-                    let target = imp.speed_target.get();
-                    let from   = imp.speed_anim_from.get();
-                    let t = imp.speed_anim_start.borrow().map_or(1.0, |start| {
-                        (start.elapsed().as_secs_f64() / ANIM_DURATION_S).min(1.0)
-                    });
-                    imp.speed_displayed.set(from + (target - from) * t);
+                    let displayed = imp.speed_displayed.get();
+                    let target    = imp.speed_target.get();
+                    // EMA: move a fixed fraction toward the target each tick.
+                    imp.speed_displayed.set(displayed + (target - displayed) * EMA_ALPHA);
                     imp.speedometer_area.queue_draw();
                     glib::ControlFlow::Continue
                 } else {
@@ -166,14 +161,10 @@ impl SpeedometerWindow {
 
 // ── Speed animation helper ────────────────────────────────────────────────────
 
-/// Update the needle animation target. Snapshots the current interpolated
-/// position as the new `from` so mid-animation transitions are seamless.
+/// Update the needle animation target. The EMA ticker will smoothly
+/// drive `speed_displayed` toward this value on every frame.
 fn set_speed_target(imp: &imp::SpeedometerWindow, new_target: f64) {
-    // Sample the current displayed value as the new animation start point.
-    let current = imp.speed_displayed.get();
-    imp.speed_anim_from.set(current);
     imp.speed_target.set(new_target);
-    *imp.speed_anim_start.borrow_mut() = Some(Instant::now());
 }
 
 // ── Cairo drawing ─────────────────────────────────────────────────────────────
