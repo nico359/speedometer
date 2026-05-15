@@ -34,6 +34,17 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.2.0" date="2026-05-15">
+      <description translate="no">
+        <p>Convergence and some other things.</p>
+        <ul>
+          <li>If switching to landscape mode or opening the app on desktop it behaves accordingly now</li>
+          <li>Added Coordinates and Time to Fix</li>
+          <li>Inhibit - screen does not go to sleep as long as the app is active</li>
+          <li>Added smoothing of the analogue speed dial</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-05-02">
       <description translate="no">
         <p>Initial release.</p>
