@@ -56,6 +56,8 @@ mod imp {
         pub altitude: Cell<f64>,
         pub accuracy: Cell<f64>,
         pub has_fix: Cell<bool>,
+        pub latitude: Cell<f64>,
+        pub longitude: Cell<f64>,
 
         // Speed needle animation state (exponential moving average)
         pub speed_displayed: Cell<f64>,  // current smoothed value drawn on screen
@@ -93,6 +95,8 @@ mod imp {
                         imp.altitude.get(),
                         imp.accuracy.get(),
                         imp.has_fix.get(),
+                        imp.latitude.get(),
+                        imp.longitude.get(),
                         cr,
                         width,
                         height,
@@ -116,6 +120,8 @@ mod imp {
                         imp.altitude.set(data.altitude_m);
                         imp.accuracy.set(data.accuracy_m);
                         imp.has_fix.set(data.has_fix);
+                        imp.latitude.set(data.latitude);
+                        imp.longitude.set(data.longitude);
                         // The ticker drives redraws; no queue_draw() needed here.
                     }
                 }
@@ -175,6 +181,8 @@ fn draw_speedometer(
     altitude: f64,
     accuracy: f64,
     has_fix: bool,
+    latitude: f64,
+    longitude: f64,
     cr: &gtk::cairo::Context,
     width: i32,
     height: i32,
@@ -182,10 +190,21 @@ fn draw_speedometer(
     let w = width as f64;
     let h = height as f64;
 
-    // Fit a square dial into the available area.
-    let size = w.min(h);
+    // Reserve vertical margins for the GPS indicator above and the info panel
+    // below, then fit the dial into whatever space remains.
+    // top_margin: dot (h*0.05) + dot radius + two text lines ≈ h*0.15
+    // bot_margin: two info rows ≈ h*0.18
+    let top_margin = h * 0.15;
+    let bot_margin = h * 0.18;
+    let usable_h   = h - top_margin - bot_margin;
+
+    // size drives every dial dimension; cap it so the dial never overflows
+    // into either margin, regardless of how wide the window gets.
+    let size = w.min(usable_h / 0.84);   // 0.84 ≈ dial diameter / size
+
     let cx = w / 2.0;
-    let cy = h / 2.0;
+    // Centre the dial in the usable vertical band.
+    let cy = top_margin + usable_h / 2.0;
 
     let r = size * 0.42;               // arc track radius
     let track_width = size * 0.038;    // arc stroke width
@@ -304,57 +323,51 @@ fn draw_speedometer(
     cr.set_source_rgb(0.30, 0.30, 0.32);
     cr.fill().ok();
 
-    // ── Large speed readout (below the dial) ─────────────────────────────
+    // ── Digital speed readout (inside the dial, below centre) ─────────────
     let speed_str = if has_fix {
         format!("{:.0}", speed_clamped)
     } else {
         "--".to_string()
     };
 
-    // Anchor point just below the dial background circle.
-    let below_dial = cy + size * 0.62;
-
     cr.set_source_rgb(1.0, 1.0, 1.0);
-    cr.set_font_size(size * 0.20);
+    cr.set_font_size(size * 0.16);
     cr.select_font_face(
         "Sans",
         gtk::cairo::FontSlant::Normal,
         gtk::cairo::FontWeight::Bold,
     );
+    let speed_y = cy + size * 0.22;
     if let Ok(ext) = cr.text_extents(&speed_str) {
-        cr.move_to(
-            cx - ext.width() / 2.0 - ext.x_bearing(),
-            below_dial,
-        );
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), speed_y);
         cr.show_text(&speed_str).ok();
     }
 
-    // "km/h" label
-    cr.set_source_rgb(0.60, 0.62, 0.65);
-    cr.set_font_size(size * 0.068);
+    // "km/h" label just below the number
+    cr.set_source_rgb(0.55, 0.57, 0.60);
+    cr.set_font_size(size * 0.055);
     cr.select_font_face(
         "Sans",
         gtk::cairo::FontSlant::Normal,
         gtk::cairo::FontWeight::Normal,
     );
     if let Ok(ext) = cr.text_extents("km/h") {
-        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), below_dial + size * 0.10);
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), speed_y + size * 0.075);
         cr.show_text("km/h").ok();
     }
 
-    // ── GPS status indicator ──────────────────────────────────────────────
+    // ── GPS status indicator (near the top) ───────────────────────────────
     let dot_r = size * 0.022;
-    // Use window height so the indicator sits near the top on portrait phones.
     let dot_cx = cx;
-    let dot_cy = h * 0.08;
+    let dot_cy = h * 0.05;
 
     cr.arc(dot_cx, dot_cy, dot_r, 0.0, 2.0 * PI);
     if !has_fix {
-        cr.set_source_rgb(0.90, 0.20, 0.20);   // red  – no data
+        cr.set_source_rgb(0.90, 0.20, 0.20);
     } else if accuracy < 10.0 {
-        cr.set_source_rgb(0.18, 0.85, 0.30);   // green – good fix
+        cr.set_source_rgb(0.18, 0.85, 0.30);
     } else {
-        cr.set_source_rgb(0.95, 0.78, 0.10);   // yellow – coarse fix
+        cr.set_source_rgb(0.95, 0.78, 0.10);
     }
     cr.fill().ok();
 
@@ -374,14 +387,10 @@ fn draw_speedometer(
     } else {
         "No signal".to_string()
     };
-    // Centre the accuracy/status label horizontally below the dot.
     let line_gap = size * 0.052;
     let label_y = dot_cy + dot_r + line_gap;
     if let Ok(ext) = cr.text_extents(&gps_label) {
-        cr.move_to(
-            dot_cx - ext.width() / 2.0 - ext.x_bearing(),
-            label_y,
-        );
+        cr.move_to(dot_cx - ext.width() / 2.0 - ext.x_bearing(), label_y);
         cr.show_text(&gps_label).ok();
     }
 
@@ -405,19 +414,36 @@ fn draw_speedometer(
         }
     }
 
-    // ── Altitude ──────────────────────────────────────────────────────────
+    // ── Info panel below the dial ─────────────────────────────────────────
+    // Start just below the dial background circle.
+    let panel_top = cy + r + track_width * 1.2 + size * 0.06;
+    let row_gap   = size * 0.075;
+
+    cr.set_font_size(size * 0.042);
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+
     if has_fix {
-        let alt_str = format!("{:.0} m", altitude);
-        cr.set_source_rgb(0.50, 0.52, 0.55);
-        cr.set_font_size(size * 0.048);
-        cr.select_font_face(
-            "Sans",
-            gtk::cairo::FontSlant::Normal,
-            gtk::cairo::FontWeight::Normal,
-        );
+        // ── Altitude ──────────────────────────────────────────────────────
+        let alt_str = format!("{:.0} m  alt", altitude);
+        cr.set_source_rgb(0.55, 0.57, 0.62);
         if let Ok(ext) = cr.text_extents(&alt_str) {
-            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy + size * 0.30);
+            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), panel_top);
             cr.show_text(&alt_str).ok();
+        }
+
+        // ── Coordinates ───────────────────────────────────────────────────
+        let lat_hem = if latitude  >= 0.0 { "N" } else { "S" };
+        let lon_hem = if longitude >= 0.0 { "E" } else { "W" };
+        let coord_str = format!(
+            "{:.5}°{}  {:.5}°{}",
+            latitude.abs(), lat_hem,
+            longitude.abs(), lon_hem,
+        );
+        cr.set_source_rgb(0.45, 0.47, 0.52);
+        cr.set_font_size(size * 0.036);
+        if let Ok(ext) = cr.text_extents(&coord_str) {
+            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), panel_top + row_gap);
+            cr.show_text(&coord_str).ok();
         }
     }
 }

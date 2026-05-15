@@ -30,6 +30,10 @@ pub struct LocationData {
     pub altitude_m: f64,
     /// Horizontal accuracy in metres reported by the portal.
     pub accuracy_m: f64,
+    /// Latitude in decimal degrees.
+    pub latitude: f64,
+    /// Longitude in decimal degrees.
+    pub longitude: f64,
     /// True once the portal has delivered at least one valid location fix.
     pub has_fix: bool,
 }
@@ -83,6 +87,8 @@ async fn watch_location(sender: Sender<LocationData>) -> ashpd::Result<()> {
             speed_kmh,
             altitude_m,
             accuracy_m,
+            latitude: location.latitude(),
+            longitude: location.longitude(),
             has_fix: true,
         }).ok();
     }
