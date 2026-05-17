@@ -40,7 +40,7 @@ const MAX_SPEED: f64 = 200.0;
 
 /// EMA smoothing factor per 16 ms tick for acceleration (speed rising).
 /// 0.08 gives a gentle ~130 ms half-life — ramps up naturally.
-const EMA_ALPHA_UP: f64 = 0.08;
+const EMA_ALPHA_UP: f64 = 0.25;
 
 /// EMA smoothing factor per 16 ms tick for deceleration (speed falling).
 /// Higher value so the needle snaps down quickly when braking hard —
