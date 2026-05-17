@@ -38,9 +38,14 @@ const SWEEP_DEG: f64 = 240.0;
 /// Maximum speed shown on the dial.
 const MAX_SPEED: f64 = 200.0;
 
-/// EMA smoothing factor per 16 ms tick (0 = frozen, 1 = instant).
-/// 0.08 gives a ~120 ms half-life — reacts quickly then decelerates naturally.
-const EMA_ALPHA: f64 = 0.08;
+/// EMA smoothing factor per 16 ms tick for acceleration (speed rising).
+/// 0.08 gives a gentle ~130 ms half-life — ramps up naturally.
+const EMA_ALPHA_UP: f64 = 0.08;
+
+/// EMA smoothing factor per 16 ms tick for deceleration (speed falling).
+/// Higher value so the needle snaps down quickly when braking hard —
+/// braking feels more abrupt than acceleration and the needle should match.
+const EMA_ALPHA_DOWN: f64 = 0.25;
 
 // ── Subclass ─────────────────────────────────────────────────────────────────
 
@@ -166,8 +171,8 @@ mod imp {
                     let imp = win.imp();
                     let displayed = imp.speed_displayed.get();
                     let target    = imp.speed_target.get();
-                    // EMA: move a fixed fraction toward the target each tick.
-                    imp.speed_displayed.set(displayed + (target - displayed) * EMA_ALPHA);
+                    let alpha = if target < displayed { EMA_ALPHA_DOWN } else { EMA_ALPHA_UP };
+                    imp.speed_displayed.set(displayed + (target - displayed) * alpha);
                     imp.speedometer_area.queue_draw();
                     glib::ControlFlow::Continue
                 } else {
