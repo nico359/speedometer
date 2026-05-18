@@ -24,6 +24,7 @@ use std::f64::consts::PI;
 use gtk::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use glib::prelude::ToVariant;
 
 // ── Drawing constants ────────────────────────────────────────────────────────
 
@@ -35,16 +36,10 @@ const START_DEG: f64 = 150.0;
 /// Total angular sweep of the dial (240° covers 8-o'clock → top → 4-o'clock).
 const SWEEP_DEG: f64 = 240.0;
 
-/// Maximum speed shown on the dial.
-const MAX_SPEED: f64 = 200.0;
-
 /// EMA smoothing factor per 16 ms tick for acceleration (speed rising).
-/// 0.08 gives a gentle ~130 ms half-life — ramps up naturally.
 const EMA_ALPHA_UP: f64 = 0.25;
 
 /// EMA smoothing factor per 16 ms tick for deceleration (speed falling).
-/// Higher value so the needle snaps down quickly when braking hard —
-/// braking feels more abrupt than acceleration and the needle should match.
 const EMA_ALPHA_DOWN: f64 = 0.25;
 
 // ── Subclass ─────────────────────────────────────────────────────────────────
@@ -72,6 +67,9 @@ mod imp {
         pub search_start_us: Cell<i64>,  // glib::monotonic_time() when search began
         pub time_to_fix_s:   Cell<i64>,  // seconds until fix was acquired; -1 = not yet
         pub prev_has_fix:    Cell<bool>, // last known fix state for transition detection
+
+        // Unit preference
+        pub use_mph: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -94,6 +92,22 @@ mod imp {
             self.parent_constructed();
 
             let obj = self.obj();
+
+            // Stateful action for speed unit (kmh / mph).
+            let action_unit = gio::SimpleAction::new_stateful(
+                "speed-unit",
+                Some(glib::VariantTy::STRING),
+                &"kmh".to_variant(),
+            );
+            let win_weak_u = obj.downgrade();
+            action_unit.connect_activate(move |action, param| {
+                if let Some(win) = win_weak_u.upgrade() {
+                    let unit = param.and_then(|v| v.str()).unwrap_or("kmh");
+                    action.set_state(&unit.to_variant());
+                    win.imp().use_mph.set(unit == "mph");
+                }
+            });
+            obj.add_action(&action_unit);
 
             // Start the search timer immediately on construction.
             self.search_start_us.set(glib::monotonic_time());
@@ -119,6 +133,7 @@ mod imp {
                         imp.latitude.get(),
                         imp.longitude.get(),
                         elapsed_s,
+                        imp.use_mph.get(),
                         cr,
                         width,
                         height,
@@ -222,6 +237,7 @@ fn draw_speedometer(
     latitude: f64,
     longitude: f64,
     elapsed_s: i64,
+    use_mph: bool,
     cr: &gtk::cairo::Context,
     width: i32,
     height: i32,
@@ -233,9 +249,9 @@ fn draw_speedometer(
     cr.paint().ok();
 
     if w > h {
-        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, cr, w, h);
+        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, cr, w, h);
     } else {
-        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, cr, w, h);
+        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, cr, w, h);
     }
 }
 
@@ -248,6 +264,7 @@ fn draw_portrait(
     latitude: f64,
     longitude: f64,
     elapsed_s: i64,
+    use_mph: bool,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
@@ -266,7 +283,7 @@ fn draw_portrait(
     // Centre the dial in the usable vertical band.
     let cy = top_margin + usable_h / 2.0;
 
-    draw_dial(speed, has_fix, cr, cx, cy, size);
+    draw_dial(speed, has_fix, use_mph, cr, cx, cy, size);
 
     // GPS status indicator sits in the top margin band, anchored to top_margin
     // so it scales correctly instead of being fixed at h*0.05.
@@ -290,6 +307,7 @@ fn draw_landscape(
     latitude: f64,
     longitude: f64,
     elapsed_s: i64,
+    use_mph: bool,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
@@ -301,7 +319,7 @@ fn draw_landscape(
     let cy_dial = h / 2.0;
     let size = (half_w * 0.90).min(h * 0.90);
 
-    draw_dial(speed, has_fix, cr, cx_dial, cy_dial, size);
+    draw_dial(speed, has_fix, use_mph, cr, cx_dial, cy_dial, size);
 
     // Subtle vertical divider between the two halves.
     cr.set_source_rgba(0.25, 0.25, 0.28, 0.5);
@@ -330,6 +348,7 @@ fn draw_landscape(
 fn draw_dial(
     speed: f64,
     has_fix: bool,
+    use_mph: bool,
     cr: &gtk::cairo::Context,
     cx: f64,
     cy: f64,
@@ -338,8 +357,16 @@ fn draw_dial(
     let r           = size * 0.42;
     let track_width = size * 0.038;
 
-    let speed_clamped = speed.clamp(0.0, MAX_SPEED);
-    let needle_rad = (START_DEG + (speed_clamped / MAX_SPEED) * SWEEP_DEG).to_radians();
+    // Unit-specific scale: km/h uses 0–200, mph uses 0–120.
+    let (max_speed, display_speed, tick_majors, tick_minor_step, unit_label): (f64, f64, &[u32], u32, &str) =
+        if use_mph {
+            (120.0, speed * 0.621_371, &[0, 20, 40, 60, 80, 100, 120], 10, "mph")
+        } else {
+            (200.0, speed, &[0, 40, 80, 120, 160, 200], 10, "km/h")
+        };
+
+    let speed_clamped = display_speed.clamp(0.0, max_speed);
+    let needle_rad = (START_DEG + (speed_clamped / max_speed) * SWEEP_DEG).to_radians();
     let start_rad  = START_DEG.to_radians();
     let end_rad    = (START_DEG + SWEEP_DEG).to_radians();
 
@@ -356,7 +383,7 @@ fn draw_dial(
 
     // ── Coloured speed arc (green → yellow → red) ─────────────────────────
     if speed_clamped > 0.1 {
-        let ratio = speed_clamped / MAX_SPEED;
+        let ratio = speed_clamped / max_speed;
         let (red, green) = if ratio <= 0.5 {
             (ratio * 2.0, 1.0)
         } else {
@@ -374,11 +401,14 @@ fn draw_dial(
     let r_minor_inner = r - size * 0.038;
     let r_label       = r - size * 0.14;
 
-    for v in (0u32..=200).step_by(10) {
-        let t_rad  = (START_DEG + (v as f64 / MAX_SPEED) * SWEEP_DEG).to_radians();
+    // Minor ticks at every tick_minor_step across the full scale.
+    let tick_count = (max_speed / tick_minor_step as f64) as u32;
+    for i in 0..=tick_count {
+        let v = i * tick_minor_step;
+        let t_rad  = (START_DEG + (v as f64 / max_speed) * SWEEP_DEG).to_radians();
         let cos_t  = t_rad.cos();
         let sin_t  = t_rad.sin();
-        let is_major = v % 20 == 0;
+        let is_major = tick_majors.contains(&v);
         let r_inner  = if is_major { r_major_inner } else { r_minor_inner };
 
         cr.set_source_rgb(0.80, 0.80, 0.82);
@@ -388,13 +418,13 @@ fn draw_dial(
         cr.stroke().ok();
     }
 
-    // ── Speed labels (0, 40, 80, 120, 160, 200) ───────────────────────────
+    // ── Speed labels at major tick positions ──────────────────────────────
     cr.set_source_rgb(0.88, 0.88, 0.90);
     cr.set_font_size(size * 0.055);
     cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
 
-    for v in [0u32, 40, 80, 120, 160, 200] {
-        let t_rad = (START_DEG + (v as f64 / MAX_SPEED) * SWEEP_DEG).to_radians();
+    for &v in tick_majors {
+        let t_rad = (START_DEG + (v as f64 / max_speed) * SWEEP_DEG).to_radians();
         let lx = cx + r_label * t_rad.cos();
         let ly = cy + r_label * t_rad.sin();
         let label = v.to_string();
@@ -432,7 +462,8 @@ fn draw_dial(
     cr.fill().ok();
 
     // ── Digital speed readout (inside the dial, below centre) ─────────────
-    let speed_str = if has_fix { format!("{:.0}", speed_clamped) } else { "--".to_string() };
+    // Show true speed even when needle is pinned at max.
+    let speed_str = if has_fix { format!("{:.0}", display_speed.max(0.0)) } else { "--".to_string() };
     cr.set_source_rgb(1.0, 1.0, 1.0);
     cr.set_font_size(size * 0.16);
     cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
@@ -442,13 +473,13 @@ fn draw_dial(
         cr.show_text(&speed_str).ok();
     }
 
-    // "km/h" label just below the number.
+    // Unit label just below the number.
     cr.set_source_rgb(0.55, 0.57, 0.60);
     cr.set_font_size(size * 0.055);
     cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
-    if let Ok(ext) = cr.text_extents("km/h") {
+    if let Ok(ext) = cr.text_extents(unit_label) {
         cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), speed_y + size * 0.075);
-        cr.show_text("km/h").ok();
+        cr.show_text(unit_label).ok();
     }
 }
 
