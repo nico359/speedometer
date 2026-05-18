@@ -7,6 +7,13 @@ Very simple Speedometer App built with GTK4/libadwaita and Rust. Aimed at mobile
 - Accuracy indicator that turns green once there is an actual GPS fix based on accuracy (because geoclue doesnt tell if it is just network or actual GPS location to my knowledge)
 - Analogue dial and numbers to show speed
 - Altitude
+- Coordinates
+- Switch between km/h and mph (top right menu button)
+- Somewhat adaptive design for desktop usage if you happen to have a compatible GPS receiver
+
+## To be improved
+
+ - Accelerometer assisted speed because right now it can be a little delayed when rapidly accelerating or braking
 
 ## Credits
 
@@ -19,4 +26,21 @@ This application was built with the assistance of AI (GitHub Copilot CLI, Claude
 ## Building
 
 The easiest way to build the app is by using GNOME Builder IDE or flatpak-builder.
+
+Example using flatpak-builder as a flatpak:
+-  Install flatpak-builder
+```
+flatpak install org.flatpak.Builder
+```
+
+-  Compile the project into a local repo
+```
+flatpak run org.flatpak.Builder --repo=repo --force-clean --user build io.github.nico359.speedometer.json
+```
+
+-  Then create a bundle which you can install
+```
+flatpak build-bundle repo speedometer.flatpak io.github.nico359.speedometer
+```
+
 
