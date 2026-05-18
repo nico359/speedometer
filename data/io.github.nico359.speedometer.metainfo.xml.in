@@ -5,10 +5,10 @@
   <project_license>GPL-3.0-or-later</project_license>
 
   <name>Speedometer</name>
-  <summary>GPS speedometer for mobile Linux</summary>
+  <summary>GPS speedometer (mostly) for Linux phones</summary>
   <description>
-    <p>Speedometer is a GPS-based speedometer designed for mobile Linux devices. It displays your current speed on an analogue dial with a colour-coded arc, a large digital readout, and altitude — all sourced from the XDG Location Portal.</p>
-    <p>The GPS accuracy indicator shows whether the location fix is good enough to determine speed, making it clear when only a network-based position is available.</p>
+    <p>Speedometer is a GPS-based speedometer designed for mobile Linux devices. It displays your current speed on an analogue dial with a colour-coded arc, a large digital readout, altitude and also coordinates - all sourced from the XDG Location Portal.</p>
+    <p>The GPS accuracy indicator shows whether the location fix is good enough to determine speed, making it clear when only a network-based position is available (yellow dot).</p>
   </description>
 
   <icon type="stock">io.github.nico359.speedometer</icon>
@@ -24,9 +24,13 @@
   <recommends>
     <display_length compare="ge">360</display_length>
     <control>touch</control>
+    <control>keyboard</control>
+    <control>pointing</control>
   </recommends>
   <supports>
     <control>touch</control>
+    <control>keyboard</control>
+    <control>pointing</control>
   </supports>
 
   <translation type="gettext">speedometer</translation>
@@ -34,14 +38,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.2.0" date="2026-05-15">
+    <release version="0.2.0" date="2026-05-18">
       <description translate="no">
-        <p>Convergence and some other things.</p>
+        <p>Landscape and some other things.</p>
         <ul>
           <li>If switching to landscape mode or opening the app on desktop it behaves accordingly now</li>
-          <li>Added Coordinates and Time to Fix</li>
+          <li>Added Coordinates and Time to Fix (Time until dot turns green)</li>
           <li>Inhibit - screen does not go to sleep as long as the app is active</li>
           <li>Added smoothing of the analogue speed dial</li>
+          <li>Added option to switch between km/h and mph</li>
         </ul>
       </description>
     </release>
