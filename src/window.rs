@@ -70,6 +70,16 @@ mod imp {
 
         // Unit preference
         pub use_mph: Cell<bool>,
+
+        // Accelerometer-assisted speed fusion.
+        // Between GPS fixes the accel integrates Δv; GPS re-anchors on every fix.
+        pub accel_base_speed: Cell<f64>,  // GPS speed at last fix (km/h)
+        pub accel_delta:      Cell<f64>,  // integrated Δv since last GPS fix (km/h)
+        pub accel_sign:       Cell<f64>,  // +1.0 accel, −1.0 decel, 0.0 unknown
+        pub accel_last_ts:    Cell<u64>,  // timestamp of most recent accel sample (µs)
+        pub accel_has_gps:    Cell<bool>, // true once GPS has delivered a valid fix
+        pub gps_prev_speed:   Cell<f64>,  // speed from previous GPS update (km/h)
+        pub accel_enabled:    Cell<bool>, // whether accel assist is active (user toggle)
     }
 
     #[glib::object_subclass]
@@ -108,6 +118,31 @@ mod imp {
                 }
             });
             obj.add_action(&action_unit);
+
+            // Stateful toggle action for accelerometer assist (default: on).
+            self.accel_enabled.set(true);
+            let action_accel = gio::SimpleAction::new_stateful(
+                "accel-enabled",
+                None,
+                &true.to_variant(),
+            );
+            let win_weak_ac = obj.downgrade();
+            action_accel.connect_activate(move |action, _| {
+                if let Some(win) = win_weak_ac.upgrade() {
+                    let current = action.state()
+                        .and_then(|v| v.get::<bool>())
+                        .unwrap_or(true);
+                    let next = !current;
+                    action.set_state(&next.to_variant());
+                    let imp = win.imp();
+                    imp.accel_enabled.set(next);
+                    // Reset fusion state when disabling so stale delta doesn't linger.
+                    if !next {
+                        imp.accel_delta.set(0.0);
+                    }
+                }
+            });
+            obj.add_action(&action_accel);
 
             // Start the search timer immediately on construction.
             self.search_start_us.set(glib::monotonic_time());
@@ -168,6 +203,22 @@ mod imp {
                             imp.time_to_fix_s.set(elapsed);
                         }
                         imp.prev_has_fix.set(good_fix);
+
+                        // Update accelerometer fusion anchor on every GPS fix.
+                        let prev_gps = imp.gps_prev_speed.get();
+                        let sign = if data.speed_kmh - prev_gps > 0.5 {
+                            1.0   // accelerating
+                        } else if prev_gps - data.speed_kmh > 0.5 {
+                            -1.0  // braking
+                        } else {
+                            imp.accel_sign.get() // maintain current sign when cruising
+                        };
+                        imp.accel_sign.set(sign);
+                        imp.gps_prev_speed.set(data.speed_kmh);
+                        imp.accel_base_speed.set(data.speed_kmh);
+                        imp.accel_delta.set(0.0);
+                        imp.accel_has_gps.set(good_fix);
+
                         set_speed_target(imp, data.speed_kmh);
                         imp.altitude.set(data.altitude_m);
                         imp.accuracy.set(data.accuracy_m);
@@ -175,6 +226,50 @@ mod imp {
                         imp.latitude.set(data.latitude);
                         imp.longitude.set(data.longitude);
                         // The ticker drives redraws; no queue_draw() needed here.
+                    }
+                }
+            });
+
+            // Accelerometer channel: fills in speed between GPS fixes.
+            let (accel_sender, accel_receiver) =
+                async_channel::bounded::<crate::accelerometer::AccelData>(4);
+
+            crate::accelerometer::start_accelerometer_watching(accel_sender);
+
+            let win_weak_a = obj.downgrade();
+            glib::MainContext::default().spawn_local(async move {
+                while let Ok(data) = accel_receiver.recv().await {
+                    if let Some(win) = win_weak_a.upgrade() {
+                        let imp = win.imp();
+
+                        // Without a GPS fix, just advance the timestamp reference.
+                        if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
+                            imp.accel_last_ts.set(data.timestamp_us);
+                            continue;
+                        }
+
+                        let last_ts = imp.accel_last_ts.get();
+                        imp.accel_last_ts.set(data.timestamp_us);
+
+                        // Skip the very first sample (no prior timestamp yet).
+                        if last_ts == 0 { continue; }
+
+                        let dt_s = data.timestamp_us.saturating_sub(last_ts) as f64 / 1_000_000.0;
+                        // Reject zero or suspiciously large intervals (sensor gap / resume).
+                        if dt_s <= 0.0 || dt_s > 0.5 { continue; }
+
+                        let sign = imp.accel_sign.get();
+                        // Below 0.3 m/s² treat as road noise / constant speed; don't integrate.
+                        if sign == 0.0 || data.linear_ms2 < 0.3 { continue; }
+
+                        // Convert: m/s² × s × 3.6 → km/h change
+                        let delta_kmh = data.linear_ms2 * dt_s * sign * 3.6;
+                        // Cap total accel-derived delta at ±30 km/h to limit drift.
+                        let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-30.0, 30.0);
+                        imp.accel_delta.set(new_delta);
+
+                        let fused = (imp.accel_base_speed.get() + new_delta).max(0.0);
+                        set_speed_target(imp, fused);
                     }
                 }
             });

@@ -44,6 +44,12 @@
     </section>
     <section>
       <item>
+        <attribute name="label" translatable="yes">Accelerometer Assist</attribute>
+        <attribute name="action">win.accel-enabled</attribute>
+      </item>
+    </section>
+    <section>
+      <item>
         <attribute name="label" translatable="yes">_About Speedometer</attribute>
         <attribute name="action">app.about</attribute>
       </item>

@@ -1095,6 +1095,7 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "tokio",
+ "zbus",
 ]
 
 [[package]]

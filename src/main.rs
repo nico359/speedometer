@@ -19,6 +19,7 @@
  */
 
 mod application;
+mod accelerometer;
 mod config;
 mod location;
 mod window;
