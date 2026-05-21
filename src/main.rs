@@ -19,7 +19,7 @@
  */
 
 mod application;
-mod accelerometer;
+mod imu;
 mod config;
 mod location;
 mod window;

@@ -71,15 +71,18 @@ mod imp {
         // Unit preference
         pub use_mph: Cell<bool>,
 
-        // Accelerometer-assisted speed fusion.
+        // IMU-assisted speed fusion.
         // Between GPS fixes the accel integrates Δv; GPS re-anchors on every fix.
+        // Gyro-based corner suppression prevents centripetal force from
+        // being wrongly integrated as braking during turns.
         pub accel_base_speed: Cell<f64>,  // GPS speed at last fix (km/h)
         pub accel_delta:      Cell<f64>,  // integrated Δv since last GPS fix (km/h)
         pub accel_sign:       Cell<f64>,  // +1.0 accel, −1.0 decel, 0.0 unknown
         pub accel_last_ts:    Cell<u64>,  // timestamp of most recent accel sample (µs)
         pub accel_has_gps:    Cell<bool>, // true once GPS has delivered a valid fix
         pub gps_prev_speed:   Cell<f64>,  // speed from previous GPS update (km/h)
-        pub accel_enabled:    Cell<bool>, // whether accel assist is active (user toggle)
+        pub gps_prev_heading: Cell<f64>,  // GPS COG from previous fix (degrees); NAN = unknown
+        pub accel_enabled:    Cell<bool>, // whether IMU assist is active (user toggle)
     }
 
     #[glib::object_subclass]
@@ -147,6 +150,8 @@ mod imp {
             // Start the search timer immediately on construction.
             self.search_start_us.set(glib::monotonic_time());
             self.time_to_fix_s.set(-1);
+            // Heading unknown until first GPS fix with COG data.
+            self.gps_prev_heading.set(f64::NAN);
 
             // Wire up the DrawingArea draw callback.
             let win_weak = obj.downgrade();
@@ -204,17 +209,36 @@ mod imp {
                         }
                         imp.prev_has_fix.set(good_fix);
 
-                        // Update accelerometer fusion anchor on every GPS fix.
+                        // Update IMU fusion anchor on every GPS fix.
+                        // Use GPS COG (Course Over Ground) to check if heading
+                        // changed significantly between fixes.  COG is purely
+                        // Doppler-derived — no magnetometer/compass involved.
+                        // If we turned ≥ 15° the speed delta is unreliable for
+                        // sign detection (centripetal effect), so we keep the
+                        // current sign rather than flipping it wrongly.
                         let prev_gps = imp.gps_prev_speed.get();
-                        let sign = if data.speed_kmh - prev_gps > 0.5 {
-                            1.0   // accelerating
-                        } else if prev_gps - data.speed_kmh > 0.5 {
-                            -1.0  // braking
+                        let prev_hdg = imp.gps_prev_heading.get();
+                        let cur_hdg  = data.heading_deg.unwrap_or(f64::NAN);
+
+                        let heading_stable = if prev_hdg.is_nan() || cur_hdg.is_nan() {
+                            // No heading data — fall back to old behaviour.
+                            true
                         } else {
-                            imp.accel_sign.get() // maintain current sign when cruising
+                            // Shortest angular distance between two bearings.
+                            let diff = ((cur_hdg - prev_hdg + 540.0) % 360.0) - 180.0;
+                            diff.abs() < 15.0
+                        };
+
+                        let sign = if heading_stable && data.speed_kmh - prev_gps > 0.5 {
+                            1.0   // accelerating on a straight road
+                        } else if heading_stable && prev_gps - data.speed_kmh > 0.5 {
+                            -1.0  // braking on a straight road
+                        } else {
+                            imp.accel_sign.get() // turning or cruising — keep current sign
                         };
                         imp.accel_sign.set(sign);
                         imp.gps_prev_speed.set(data.speed_kmh);
+                        imp.gps_prev_heading.set(cur_hdg);
                         imp.accel_base_speed.set(data.speed_kmh);
                         imp.accel_delta.set(0.0);
                         imp.accel_has_gps.set(good_fix);
@@ -230,15 +254,16 @@ mod imp {
                 }
             });
 
-            // Accelerometer channel: fills in speed between GPS fixes.
-            let (accel_sender, accel_receiver) =
-                async_channel::bounded::<crate::accelerometer::AccelData>(4);
+            // IMU channel: fills in speed between GPS fixes with gyro-aided
+            // corner suppression.
+            let (imu_sender, imu_receiver) =
+                async_channel::bounded::<crate::imu::ImuData>(4);
 
-            crate::accelerometer::start_accelerometer_watching(accel_sender);
+            crate::imu::start_imu_watching(imu_sender);
 
             let win_weak_a = obj.downgrade();
             glib::MainContext::default().spawn_local(async move {
-                while let Ok(data) = accel_receiver.recv().await {
+                while let Ok(data) = imu_receiver.recv().await {
                     if let Some(win) = win_weak_a.upgrade() {
                         let imp = win.imp();
 
@@ -251,20 +276,28 @@ mod imp {
                         let last_ts = imp.accel_last_ts.get();
                         imp.accel_last_ts.set(data.timestamp_us);
 
-                        // Skip the very first sample (no prior timestamp yet).
                         if last_ts == 0 { continue; }
 
                         let dt_s = data.timestamp_us.saturating_sub(last_ts) as f64 / 1_000_000.0;
-                        // Reject zero or suspiciously large intervals (sensor gap / resume).
                         if dt_s <= 0.0 || dt_s > 0.5 { continue; }
 
                         let sign = imp.accel_sign.get();
-                        // Below 0.3 m/s² treat as road noise / constant speed; don't integrate.
                         if sign == 0.0 || data.linear_ms2 < 0.3 { continue; }
 
-                        // Convert: m/s² × s × 3.6 → km/h change
-                        let delta_kmh = data.linear_ms2 * dt_s * sign * 3.6;
-                        // Cap total accel-derived delta at ±30 km/h to limit drift.
+                        // Gyro-based corner suppression.
+                        // Below GYRO_LO rad/s: straight line → full accel weight.
+                        // Above GYRO_HI rad/s: clear turn → suppress entirely.
+                        // 0.10 rad/s ≈ 6°/s  (gentle curve onset)
+                        // 0.30 rad/s ≈ 17°/s (definite intersection turn)
+                        const GYRO_LO: f64 = 0.10;
+                        const GYRO_HI: f64 = 0.30;
+                        let weight = 1.0 - ((data.gyro_rads - GYRO_LO) / (GYRO_HI - GYRO_LO))
+                            .clamp(0.0, 1.0);
+
+                        if weight < 0.01 { continue; }
+
+                        // Convert: m/s² × s × weight × 3.6 → km/h change
+                        let delta_kmh = data.linear_ms2 * dt_s * sign * weight * 3.6;
                         let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-30.0, 30.0);
                         imp.accel_delta.set(new_delta);
 

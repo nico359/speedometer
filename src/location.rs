@@ -36,6 +36,10 @@ pub struct LocationData {
     pub longitude: f64,
     /// True once the portal has delivered at least one valid location fix.
     pub has_fix: bool,
+    /// GPS Course Over Ground in degrees (0 = North, clockwise).
+    /// Derived from GPS Doppler velocity — completely independent of the
+    /// magnetometer/compass. `None` when stationary or unavailable.
+    pub heading_deg: Option<f64>,
 }
 
 /// Spawn a background thread running a Tokio current-thread runtime that
@@ -90,6 +94,7 @@ async fn watch_location(sender: Sender<LocationData>) -> ashpd::Result<()> {
             latitude: location.latitude(),
             longitude: location.longitude(),
             has_fix: true,
+            heading_deg: location.heading(),
         }).ok();
     }
 
