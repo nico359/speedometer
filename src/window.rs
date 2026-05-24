@@ -185,6 +185,7 @@ mod imp {
                         imp.use_mph.get(),
                         imp.gforce_x.get(),
                         imp.gforce_y.get(),
+                        imp.accel_enabled.get(),
                         cr,
                         width,
                         height,
@@ -391,6 +392,7 @@ fn draw_speedometer(
     use_mph: bool,
     gforce_x: f64,
     gforce_y: f64,
+    accel_enabled: bool,
     cr: &gtk::cairo::Context,
     width: i32,
     height: i32,
@@ -402,9 +404,9 @@ fn draw_speedometer(
     cr.paint().ok();
 
     if w > h {
-        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, cr, w, h);
+        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, accel_enabled, cr, w, h);
     } else {
-        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, cr, w, h);
+        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, accel_enabled, cr, w, h);
     }
 }
 
@@ -420,13 +422,14 @@ fn draw_portrait(
     use_mph: bool,
     gforce_x: f64,
     gforce_y: f64,
+    accel_enabled: bool,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
 ) {
     // top_margin is sized generously so the GPS block (dot + two text lines)
     // never overlaps the dial even on near-square windows.
-    let top_margin = h * 0.22;
+    let top_margin = h * 0.17;
     let bot_margin = h * 0.22;
     let usable_h   = h - top_margin - bot_margin;
 
@@ -451,19 +454,29 @@ fn draw_portrait(
     let panel_top = cy + r + track_width * 1.2 + size * 0.06;
     let row_gap   = size * 0.075;
 
-    // Split the info band vertically at ~40% from the left.
-    // G-force meter on the left, coordinate text on the right.
-    // Both are centred vertically in the available band.
     let band_center_y = (panel_top + h) / 2.0;
     let available_h   = h - panel_top;
-    let gf_radius     = (available_h * 0.32).min(w * 0.18);
-    let gf_cx         = w * 0.22;
-    draw_gforce_meter(gforce_x, gforce_y, cr, gf_cx, band_center_y, gf_radius);
 
-    // Text: 3 rows spanning 2×row_gap, centred at band_center_y.
-    let text_cx    = gf_cx + gf_radius + (w - gf_cx - gf_radius) / 2.0;
-    let text_top   = band_center_y - row_gap;
-    draw_info_labels(altitude, latitude, longitude, has_fix, cr, text_cx, text_top, row_gap, size);
+    if accel_enabled {
+        // Split the info band vertically at ~40% from the left.
+        // G-force meter on the left, coordinate text on the right.
+        let gf_radius = (available_h * 0.32).min(w * 0.18);
+        let gf_cx     = w * 0.22;
+        draw_gforce_meter(gforce_x, gforce_y, cr, gf_cx, band_center_y, gf_radius);
+
+        // Text: 3 rows spanning 2×row_gap, centred at band_center_y.
+        let text_cx  = gf_cx + gf_radius + (w - gf_cx - gf_radius) / 2.0;
+        let text_top = band_center_y - row_gap;
+        draw_info_labels(altitude, latitude, longitude, has_fix, cr, text_cx, text_top, row_gap, size);
+    } else {
+        // Accel disabled: full-width info labels + small warning just below.
+        let text_top = band_center_y - row_gap * 2.0;
+        draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx, text_top, row_gap, size);
+        // Note: place below last info row with a fixed offset, capped so it never
+        // bleeds off the bottom edge.
+        let note_cy = (text_top + 3.5 * row_gap).min(h - size * 0.09);
+        draw_accel_disabled_note(cr, cx, note_cy, size);
+    }
 }
 
 /// Landscape layout: dial on the left half, GPS / altitude / coordinates on the right.
@@ -478,6 +491,7 @@ fn draw_landscape(
     use_mph: bool,
     gforce_x: f64,
     gforce_y: f64,
+    accel_enabled: bool,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
@@ -498,25 +512,35 @@ fn draw_landscape(
     cr.line_to(half_w, h * 0.92);
     cr.stroke().ok();
 
-    // Right panel: split left/right so G-meter and text don't overlap.
-    // Left quarter of the right half → G-force meter.
-    // Right quarter of the right half → GPS status + coordinates.
-    let cx_gf   = half_w + half_w * 0.28;
-    let cx_info = half_w + half_w * 0.72;
+    if accel_enabled {
+        // Right panel: split left/right so G-meter and text don't overlap.
+        // Left quarter of the right half → G-force meter.
+        // Right quarter of the right half → GPS status + coordinates.
+        let cx_gf   = half_w + half_w * 0.28;
+        let cx_info = half_w + half_w * 0.72;
 
-    // GPS status near the top of the info column.
-    let dot_cy = h * 0.18;
-    draw_gps_status(accuracy, has_fix, elapsed_s, cr, cx_info, dot_cy, size);
+        let dot_cy = h * 0.18;
+        draw_gps_status(accuracy, has_fix, elapsed_s, cr, cx_info, dot_cy, size);
 
-    // G-force meter centred vertically, small enough to leave clear margins.
-    let gf_radius = (h * 0.30).min(half_w * 0.26);
-    let gf_cy = h * 0.50;
-    draw_gforce_meter(gforce_x, gforce_y, cr, cx_gf, gf_cy, gf_radius);
+        let gf_radius = (h * 0.30).min(half_w * 0.26);
+        let gf_cy = h * 0.50;
+        draw_gforce_meter(gforce_x, gforce_y, cr, cx_gf, gf_cy, gf_radius);
 
-    // Altitude + coordinates in the lower portion of the info column.
-    let info_top = h * 0.60;
-    let row_gap  = size * 0.075;
-    draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
+        let info_top = h * 0.60;
+        let row_gap  = size * 0.075;
+        draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
+    } else {
+        // Accel disabled: single info column centred in the right half.
+        let cx_info = half_w + half_w / 2.0;
+        let dot_cy  = h * 0.15;
+        draw_gps_status(accuracy, has_fix, elapsed_s, cr, cx_info, dot_cy, size);
+
+        let row_gap  = size * 0.075;
+        let info_top = h * 0.40;
+        draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
+        let note_cy = (info_top + 3.5 * row_gap).min(h * 0.90);
+        draw_accel_disabled_note(cr, cx_info, note_cy, size);
+    }
 }
 
 // ── Shared drawing helpers ────────────────────────────────────────────────────
@@ -800,6 +824,30 @@ fn draw_info_labels(
 /// Note on sign conventions: the sensor axes depend on phone mounting orientation.
 /// The display is intentionally unlabelled so the user can verify empirically
 /// which direction moves the dot.
+/// Small dimmed note shown in place of the G-force meter when accel assist is off.
+fn draw_accel_disabled_note(cr: &gtk::cairo::Context, cx: f64, cy: f64, size: f64) {
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Italic, gtk::cairo::FontWeight::Normal);
+    let font_size = size * 0.038;
+    cr.set_font_size(font_size);
+    cr.set_source_rgba(0.55, 0.56, 0.60, 0.90);
+
+    let lines = [
+        "Accel assist off",
+        "Speed may feel less responsive",
+        "during rapid acceleration",
+    ];
+    let line_h = font_size * 1.5;
+    let total_h = line_h * (lines.len() as f64 - 1.0);
+    let mut y = cy - total_h / 2.0;
+    for line in &lines {
+        if let Ok(ext) = cr.text_extents(line) {
+            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), y);
+            cr.show_text(line).ok();
+        }
+        y += line_h;
+    }
+}
+
 fn draw_gforce_meter(
     gx: f64,
     gy: f64,
