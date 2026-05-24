@@ -83,6 +83,15 @@ mod imp {
         pub gps_prev_speed:   Cell<f64>,  // speed from previous GPS update (km/h)
         pub gps_prev_heading: Cell<f64>,  // GPS COG from previous fix (degrees); NAN = unknown
         pub accel_enabled:    Cell<bool>, // whether IMU assist is active (user toggle)
+
+        // G-force display state.
+        // Raw values are updated on every IMU sample regardless of the fusion
+        // toggle, so the G-meter always shows live sensor data.
+        // Smoothed values are advanced each frame by the 60 fps ticker.
+        pub gforce_x_raw: Cell<f64>, // lateral G  (accel_x / 9.81), sensor frame
+        pub gforce_y_raw: Cell<f64>, // longitudinal G (accel_y / 9.81), sensor frame
+        pub gforce_x:     Cell<f64>, // EMA-smoothed lateral G for display
+        pub gforce_y:     Cell<f64>, // EMA-smoothed longitudinal G for display
     }
 
     #[glib::object_subclass]
@@ -174,6 +183,8 @@ mod imp {
                         imp.longitude.get(),
                         elapsed_s,
                         imp.use_mph.get(),
+                        imp.gforce_x.get(),
+                        imp.gforce_y.get(),
                         cr,
                         width,
                         height,
@@ -267,8 +278,13 @@ mod imp {
                     if let Some(win) = win_weak_a.upgrade() {
                         let imp = win.imp();
 
-                        // Without a GPS fix, just advance the timestamp reference.
-                        if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
+                    // Always update G-force display regardless of GPS or toggle state.
+                    const G: f64 = 9.81;
+                    imp.gforce_x_raw.set(data.accel_x_ms2 / G);
+                    imp.gforce_y_raw.set(data.accel_y_ms2 / G);
+
+                    // Fusion requires a GPS fix and the IMU assist toggle to be enabled.
+                    if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
                             imp.accel_last_ts.set(data.timestamp_us);
                             continue;
                         }
@@ -316,6 +332,13 @@ mod imp {
                     let target    = imp.speed_target.get();
                     let alpha = if target < displayed { EMA_ALPHA_DOWN } else { EMA_ALPHA_UP };
                     imp.speed_displayed.set(displayed + (target - displayed) * alpha);
+
+                    // G-force display smoothing (independent of speed fusion toggle).
+                    const GFORCE_ALPHA: f64 = 0.25;
+                    let gx_disp = imp.gforce_x.get();
+                    let gy_disp = imp.gforce_y.get();
+                    imp.gforce_x.set(gx_disp + (imp.gforce_x_raw.get() - gx_disp) * GFORCE_ALPHA);
+                    imp.gforce_y.set(gy_disp + (imp.gforce_y_raw.get() - gy_disp) * GFORCE_ALPHA);
                     imp.speedometer_area.queue_draw();
                     glib::ControlFlow::Continue
                 } else {
@@ -366,6 +389,8 @@ fn draw_speedometer(
     longitude: f64,
     elapsed_s: i64,
     use_mph: bool,
+    gforce_x: f64,
+    gforce_y: f64,
     cr: &gtk::cairo::Context,
     width: i32,
     height: i32,
@@ -377,9 +402,9 @@ fn draw_speedometer(
     cr.paint().ok();
 
     if w > h {
-        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, cr, w, h);
+        draw_landscape(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, cr, w, h);
     } else {
-        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, cr, w, h);
+        draw_portrait(speed, altitude, accuracy, has_fix, latitude, longitude, elapsed_s, use_mph, gforce_x, gforce_y, cr, w, h);
     }
 }
 
@@ -393,6 +418,8 @@ fn draw_portrait(
     longitude: f64,
     elapsed_s: i64,
     use_mph: bool,
+    gforce_x: f64,
+    gforce_y: f64,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
@@ -423,7 +450,20 @@ fn draw_portrait(
     let track_width = size * 0.038;
     let panel_top = cy + r + track_width * 1.2 + size * 0.06;
     let row_gap   = size * 0.075;
-    draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx, panel_top, row_gap, size);
+
+    // Split the info band vertically at ~40% from the left.
+    // G-force meter on the left, coordinate text on the right.
+    // Both are centred vertically in the available band.
+    let band_center_y = (panel_top + h) / 2.0;
+    let available_h   = h - panel_top;
+    let gf_radius     = (available_h * 0.32).min(w * 0.18);
+    let gf_cx         = w * 0.22;
+    draw_gforce_meter(gforce_x, gforce_y, cr, gf_cx, band_center_y, gf_radius);
+
+    // Text: 3 rows spanning 2×row_gap, centred at band_center_y.
+    let text_cx    = gf_cx + gf_radius + (w - gf_cx - gf_radius) / 2.0;
+    let text_top   = band_center_y - row_gap;
+    draw_info_labels(altitude, latitude, longitude, has_fix, cr, text_cx, text_top, row_gap, size);
 }
 
 /// Landscape layout: dial on the left half, GPS / altitude / coordinates on the right.
@@ -436,6 +476,8 @@ fn draw_landscape(
     longitude: f64,
     elapsed_s: i64,
     use_mph: bool,
+    gforce_x: f64,
+    gforce_y: f64,
     cr: &gtk::cairo::Context,
     w: f64,
     h: f64,
@@ -456,15 +498,23 @@ fn draw_landscape(
     cr.line_to(half_w, h * 0.92);
     cr.stroke().ok();
 
-    // Right panel: centred at x = w * 0.75.
-    let cx_info = half_w + half_w / 2.0;
+    // Right panel: split left/right so G-meter and text don't overlap.
+    // Left quarter of the right half → G-force meter.
+    // Right quarter of the right half → GPS status + coordinates.
+    let cx_gf   = half_w + half_w * 0.28;
+    let cx_info = half_w + half_w * 0.72;
 
-    // GPS status near the upper portion of the right panel.
-    let dot_cy = h * 0.22;
+    // GPS status near the top of the info column.
+    let dot_cy = h * 0.18;
     draw_gps_status(accuracy, has_fix, elapsed_s, cr, cx_info, dot_cy, size);
 
-    // Altitude + coordinates in the lower portion.
-    let info_top = h * 0.58;
+    // G-force meter centred vertically, small enough to leave clear margins.
+    let gf_radius = (h * 0.30).min(half_w * 0.26);
+    let gf_cy = h * 0.50;
+    draw_gforce_meter(gforce_x, gforce_y, cr, cx_gf, gf_cy, gf_radius);
+
+    // Altitude + coordinates in the lower portion of the info column.
+    let info_top = h * 0.60;
     let row_gap  = size * 0.075;
     draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
 }
@@ -735,3 +785,102 @@ fn draw_info_labels(
     }
 }
 
+// ── G-force meter ─────────────────────────────────────────────────────────────
+
+/// Draws a 2-D bullseye G-force meter centred at (cx, cy).
+///
+/// `gx` is the lateral G-force (sensor X / 9.81) — typically left/right.
+/// `gy` is the longitudinal G-force (sensor Y / 9.81) — typically forward/back.
+/// `radius` is the display radius that corresponds to 1 G.
+///
+/// The dot colour transitions green → yellow → red with total G.
+/// A small status label (IDLE / ACC / BRAKE / TURN L / TURN R) is shown above the
+/// meter so the user can verify which axis does what while stationary/moving.
+///
+/// Note on sign conventions: the sensor axes depend on phone mounting orientation.
+/// The display is intentionally unlabelled so the user can verify empirically
+/// which direction moves the dot.
+fn draw_gforce_meter(
+    gx: f64,
+    gy: f64,
+    cr: &gtk::cairo::Context,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+) {
+    let r = radius;
+    const THRESHOLD: f64 = 0.08; // G below which an axis is considered idle
+
+    // ── Background circle ──────────────────────────────────────────────────
+    cr.arc(cx, cy, r * 1.10, 0.0, 2.0 * PI);
+    cr.set_source_rgb(0.07, 0.07, 0.09);
+    cr.fill().ok();
+
+    // ── Concentric rings at 0.25 G, 0.5 G, 1.0 G ──────────────────────────
+    for (frac, alpha, lw) in &[
+        (1.00_f64, 0.65_f64, 0.040_f64),
+        (0.50_f64, 0.40_f64, 0.025_f64),
+        (0.25_f64, 0.28_f64, 0.018_f64),
+    ] {
+        cr.arc(cx, cy, r * frac, 0.0, 2.0 * PI);
+        cr.set_source_rgba(0.35, 0.35, 0.38, *alpha);
+        cr.set_line_width(r * lw);
+        cr.stroke().ok();
+    }
+
+    // ── Crosshairs ─────────────────────────────────────────────────────────
+    cr.set_source_rgba(0.32, 0.32, 0.35, 0.55);
+    cr.set_line_width(r * 0.018);
+    cr.move_to(cx - r, cy); cr.line_to(cx + r, cy); cr.stroke().ok();
+    cr.move_to(cx, cy - r); cr.line_to(cx, cy + r); cr.stroke().ok();
+
+    // ── Dot ────────────────────────────────────────────────────────────────
+    let total_g = (gx * gx + gy * gy).sqrt();
+    let dot_x = cx + gx.clamp(-1.0, 1.0) * r;
+    let dot_y = cy - gy.clamp(-1.0, 1.0) * r;  // screen Y inverted
+
+    // Colour: green (low) → yellow (medium) → red (high), threshold at 0.5 G.
+    let (red, green) = if total_g <= 0.5 {
+        (total_g * 2.0, 1.0)
+    } else {
+        (1.0, 1.0 - (total_g - 0.5) * 2.0)
+    };
+    let green = green.clamp(0.0, 1.0);
+
+    cr.arc(dot_x, dot_y, r * 0.14, 0.0, 2.0 * PI);
+    cr.set_source_rgb(red, green, 0.05);
+    cr.fill().ok();
+
+    // Subtle glow ring around the dot.
+    cr.arc(dot_x, dot_y, r * 0.20, 0.0, 2.0 * PI);
+    cr.set_source_rgba(red, green, 0.05, 0.25);
+    cr.set_line_width(r * 0.05);
+    cr.stroke().ok();
+
+    // ── Status label ───────────────────────────────────────────────────────
+    let status = if total_g < THRESHOLD {
+        "IDLE"
+    } else if gy.abs() >= gx.abs() {
+        if gy > 0.0 { "ACC" } else { "BRAKE" }
+    } else {
+        if gx > 0.0 { "TURN R" } else { "TURN L" }
+    };
+
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Bold);
+    cr.set_font_size(r * 0.30);
+    cr.set_source_rgb(0.52, 0.54, 0.58);
+    if let Ok(ext) = cr.text_extents(status) {
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy - r * 1.30);
+        cr.show_text(status).ok();
+    }
+
+    // ── Total-G readout ────────────────────────────────────────────────────
+    let g_str = format!("{:.2}g", total_g);
+    cr.select_font_face("Sans", gtk::cairo::FontSlant::Normal, gtk::cairo::FontWeight::Normal);
+    cr.set_font_size(r * 0.28);
+    cr.set_source_rgb(0.45, 0.47, 0.50);
+    if let Ok(ext) = cr.text_extents(&g_str) {
+        cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), cy + r * 1.38);
+        cr.show_text(&g_str).ok();
+    }
+}

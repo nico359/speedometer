@@ -19,15 +19,21 @@
  */
 
 use async_channel::Sender;
-use futures_util::StreamExt;
-use zbus::{Connection, MatchRule, MessageStream};
+use zbus::Connection;
 
 /// Combined IMU update forwarded to the UI thread on every accelerometer sample.
 pub struct ImuData {
     /// Sensor timestamp in microseconds (from sensorfw accelerometer).
     pub timestamp_us: u64,
     /// Magnitude of linear acceleration in m/s² after gravity removal (≥ 0).
+    /// Used by the speed fusion logic.
     pub linear_ms2: f64,
+    /// Raw X component of linear acceleration in m/s² (gravity removed).
+    /// In the phone's sensor frame: typically lateral (right = positive).
+    pub accel_x_ms2: f64,
+    /// Raw Y component of linear acceleration in m/s² (gravity removed).
+    /// In the phone's sensor frame: typically longitudinal (forward = positive).
+    pub accel_y_ms2: f64,
     /// Total angular velocity in rad/s from the most recent gyroscope sample.
     /// Used to suppress accel integration during cornering.
     pub gyro_rads: f64,
@@ -84,94 +90,122 @@ async fn start_sensor(conn: &Connection, path: &str, interface: &str, session_id
 
 async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
     let conn = Connection::system().await?;
+    let pid = std::process::id() as i64;
 
     // --- Accelerometer ---
     let accel_session = request_sensor(&conn, "accelerometersensor").await?;
+    conn.call_method(
+        Some("com.nokia.SensorService"),
+        "/SensorManager/accelerometersensor",
+        Some("local.AccelerometerSensor"),
+        "setInterval",
+        &(accel_session, 80i32),
+    ).await.ok();
     start_sensor(&conn, "/SensorManager/accelerometersensor", "local.AccelerometerSensor", accel_session).await?;
 
-    let accel_rule = MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .sender("com.nokia.SensorService")?
-        .path("/SensorManager/accelerometersensor")?
-        .interface("local.AccelerometerSensor")?
-        .member("dataAvailable")?
-        .build();
-    let mut accel_stream = MessageStream::for_match_rule(accel_rule, &conn, Some(64)).await?;
-
-    // --- Gyroscope ---
-    // Falls back gracefully: if gyro is unavailable, gyro_rads stays 0.0 and
-    // the accel integration runs without suppression (same as before).
-    let gyro_available = async {
+    // --- Gyroscope (optional) ---
+    let gyro_session: Option<i32> = async {
         let sid = request_sensor(&conn, "gyroscopesensor").await?;
+        conn.call_method(
+            Some("com.nokia.SensorService"),
+            "/SensorManager/gyroscopesensor",
+            Some("local.GyroscopeSensor"),
+            "setInterval",
+            &(sid, 80i32),
+        ).await.ok();
         start_sensor(&conn, "/SensorManager/gyroscopesensor", "local.GyroscopeSensor", sid).await?;
-        zbus::Result::Ok(())
-    }.await.is_ok();
+        zbus::Result::Ok(sid)
+    }.await.ok();
 
-    let gyro_rule = MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .sender("com.nokia.SensorService")?
-        .path("/SensorManager/gyroscopesensor")?
-        .interface("local.GyroscopeSensor")?
-        .member("dataAvailable")?
-        .build();
-    // Always create the stream; if gyro isn't running it simply never fires.
-    let mut gyro_stream = MessageStream::for_match_rule(gyro_rule, &conn, Some(64)).await?;
-
-    if !gyro_available {
+    if gyro_session.is_none() {
         eprintln!("IMU: gyroscopesensor unavailable, corner suppression disabled");
     }
 
-    // Low-pass filter state for gravity estimation.
-    // α ≈ 0.926 → ~1 s time constant at the 80 ms default accel interval.
-    const ALPHA: f64 = 0.926;
+    // sensorfw on this device (hybris adaptor) does not emit streaming
+    // dataAvailable D-Bus signals. Poll the xyz property directly instead.
+    // 80 ms interval → ~12.5 Hz, matches the sensor's default data rate.
+    const POLL_MS: u64 = 80;
+    const ALPHA: f64 = 0.926;         // LP filter α for gravity estimation
     const MG_TO_MS2: f64 = 9.81 / 1000.0;
-    // Gyro is in mdps (milli-degrees/second); convert to rad/s.
     const MDPS_TO_RADS: f64 = std::f64::consts::PI / 180_000.0;
 
     let mut gravity: Option<(f64, f64, f64)> = None;
-    let mut gyro_rads: f64 = 0.0; // latest total angular velocity
+    let mut last_ts: u64 = 0;
+    let _ = pid; // suppress unused warning if pid isn't used elsewhere
 
     loop {
-        tokio::select! {
-            // Gyro sample: update the shared angular-velocity state.
-            Some(msg) = gyro_stream.next() => {
-                if let Ok(msg) = msg {
-                    if let Ok((_, gx, gy, gz)) = msg.body().deserialize::<(u64, f64, f64, f64)>() {
+        tokio::time::sleep(std::time::Duration::from_millis(POLL_MS)).await;
+
+        // Poll gyroscope first so we have up-to-date angular velocity.
+        let gyro_rads = if gyro_session.is_some() {
+            match conn.call_method(
+                Some("com.nokia.SensorService"),
+                "/SensorManager/gyroscopesensor",
+                Some("local.GyroscopeSensor"),
+                "xyz",
+                &(),
+            ).await {
+                Ok(reply) => {
+                    if let Ok((_, gx, gy, gz)) = reply.body().deserialize::<(u64, f64, f64, f64)>() {
                         let rx = gx * MDPS_TO_RADS;
                         let ry = gy * MDPS_TO_RADS;
                         let rz = gz * MDPS_TO_RADS;
-                        gyro_rads = (rx * rx + ry * ry + rz * rz).sqrt();
-                    }
+                        (rx * rx + ry * ry + rz * rz).sqrt()
+                    } else { 0.0 }
                 }
+                Err(_) => 0.0,
             }
+        } else {
+            0.0
+        };
 
-            // Accel sample: compute linear acceleration and emit ImuData.
-            Some(msg) = accel_stream.next() => {
-                let msg = msg?;
-                let (ts, x_mg, y_mg, z_mg): (u64, f64, f64, f64) = msg.body().deserialize()?;
+        // Poll accelerometer.
+        let reply = match conn.call_method(
+            Some("com.nokia.SensorService"),
+            "/SensorManager/accelerometersensor",
+            Some("local.AccelerometerSensor"),
+            "xyz",
+            &(),
+        ).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
 
-                let (x, y, z) = (x_mg * MG_TO_MS2, y_mg * MG_TO_MS2, z_mg * MG_TO_MS2);
+        let (ts, x_mg, y_mg, z_mg): (u64, f64, f64, f64) = match reply.body().deserialize() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
 
-                let g = match &mut gravity {
-                    None => {
-                        gravity = Some((x, y, z));
-                        continue;
-                    }
-                    Some(g) => {
-                        g.0 = ALPHA * g.0 + (1.0 - ALPHA) * x;
-                        g.1 = ALPHA * g.1 + (1.0 - ALPHA) * y;
-                        g.2 = ALPHA * g.2 + (1.0 - ALPHA) * z;
-                        *g
-                    }
-                };
+        // Skip if the sensor timestamp hasn't advanced (stale read).
+        if ts == last_ts { continue; }
+        last_ts = ts;
 
-                let (lx, ly, lz) = (x - g.0, y - g.1, z - g.2);
-                let linear_ms2 = (lx * lx + ly * ly + lz * lz).sqrt();
+        let (x, y, z) = (x_mg * MG_TO_MS2, y_mg * MG_TO_MS2, z_mg * MG_TO_MS2);
 
-                sender.send_blocking(ImuData { timestamp_us: ts, linear_ms2, gyro_rads }).ok();
+        let g = match &mut gravity {
+            None => {
+                gravity = Some((x, y, z));
+                continue;
             }
+            Some(g) => {
+                g.0 = ALPHA * g.0 + (1.0 - ALPHA) * x;
+                g.1 = ALPHA * g.1 + (1.0 - ALPHA) * y;
+                g.2 = ALPHA * g.2 + (1.0 - ALPHA) * z;
+                *g
+            }
+        };
 
-            else => break,
+        let (lx, ly, lz) = (x - g.0, y - g.1, z - g.2);
+        let linear_ms2 = (lx * lx + ly * ly + lz * lz).sqrt();
+
+        if sender.send_blocking(ImuData {
+            timestamp_us: ts,
+            linear_ms2,
+            accel_x_ms2: lx,
+            accel_y_ms2: ly,
+            gyro_rads,
+        }).is_err() {
+            break; // receiver dropped — UI is gone
         }
     }
 
