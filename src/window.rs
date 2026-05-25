@@ -22,6 +22,7 @@ use std::cell::Cell;
 use std::f64::consts::PI;
 
 use gtk::prelude::*;
+use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use glib::prelude::ToVariant;
@@ -134,27 +135,51 @@ mod imp {
             });
             obj.add_action(&action_unit);
 
-            // Stateful toggle action for accelerometer assist (default: on).
-            self.accel_enabled.set(true);
+            // Stateful toggle action for accelerometer assist (default: off).
+            self.accel_enabled.set(false);
             let action_accel = gio::SimpleAction::new_stateful(
                 "accel-enabled",
                 None,
-                &true.to_variant(),
+                &false.to_variant(),
             );
             let win_weak_ac = obj.downgrade();
             action_accel.connect_activate(move |action, _| {
                 if let Some(win) = win_weak_ac.upgrade() {
                     let current = action.state()
                         .and_then(|v| v.get::<bool>())
-                        .unwrap_or(true);
+                        .unwrap_or(false);
                     let next = !current;
-                    action.set_state(&next.to_variant());
                     let imp = win.imp();
-                    imp.accel_enabled.set(next);
-                    // Reset fusion state when disabling so stale delta doesn't linger.
+
                     if !next {
+                        // Disabling: immediate, no dialog.
+                        action.set_state(&false.to_variant());
+                        imp.accel_enabled.set(false);
                         imp.accel_delta.set(0.0);
+                        return;
                     }
+
+                    // Enabling: show a confirmation dialog first.
+                    let dialog = adw::AlertDialog::new(
+                        Some("Enable Accelerometer Assist?"),
+                        Some("⚠️ Experimental feature\n\nThis uses the accelerometer to improve speed readings between GPS updates and to show the G-force meter.\n\nRequirements:\n• Phone must be held upright in portrait orientation\n• Requires Halium/sensorfw (device-specific)\n\nReadings may be inaccurate or unavailable on other devices or orientations."),
+                    );
+                    dialog.add_response("cancel", "Cancel");
+                    dialog.add_response("enable", "Enable");
+                    dialog.set_response_appearance("enable", adw::ResponseAppearance::Suggested);
+
+                    let action_weak = glib::WeakRef::new();
+                    action_weak.set(Some(action));
+                    let win_weak2 = win.downgrade();
+                    dialog.connect_response(None, move |_, response| {
+                        if response == "enable" {
+                            if let (Some(a), Some(w)) = (action_weak.upgrade(), win_weak2.upgrade()) {
+                                a.set_state(&true.to_variant());
+                                w.imp().accel_enabled.set(true);
+                            }
+                        }
+                    });
+                    dialog.present(Some(&win));
                 }
             });
             obj.add_action(&action_accel);
@@ -498,13 +523,9 @@ fn draw_portrait(
         let text_top = band_center_y - row_gap;
         draw_info_labels(altitude, latitude, longitude, has_fix, cr, text_cx, text_top, row_gap, size);
     } else {
-        // Accel disabled: full-width info labels + small warning just below.
+        // Accel disabled: full-width info labels, G-meter hidden silently.
         let text_top = band_center_y - row_gap * 2.0;
         draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx, text_top, row_gap, size);
-        // Note: place below last info row with a fixed offset, capped so it never
-        // bleeds off the bottom edge.
-        let note_cy = (text_top + 3.5 * row_gap).min(h - size * 0.09);
-        draw_accel_disabled_note(cr, cx, note_cy, size);
     }
 }
 
@@ -559,7 +580,7 @@ fn draw_landscape(
         let row_gap  = size * 0.075;
         draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
     } else {
-        // Accel disabled: single info column centred in the right half.
+        // Accel disabled: single info column centred in the right half, G-meter hidden silently.
         let cx_info = half_w + half_w / 2.0;
         let dot_cy  = h * 0.15;
         draw_gps_status(accuracy, has_fix, elapsed_s, cr, cx_info, dot_cy, size);
@@ -567,8 +588,6 @@ fn draw_landscape(
         let row_gap  = size * 0.075;
         let info_top = h * 0.40;
         draw_info_labels(altitude, latitude, longitude, has_fix, cr, cx_info, info_top, row_gap, size);
-        let note_cy = (info_top + 3.5 * row_gap).min(h * 0.90);
-        draw_accel_disabled_note(cr, cx_info, note_cy, size);
     }
 }
 
@@ -853,30 +872,6 @@ fn draw_info_labels(
 /// Note on sign conventions: the sensor axes depend on phone mounting orientation.
 /// The display is intentionally unlabelled so the user can verify empirically
 /// which direction moves the dot.
-/// Small dimmed note shown in place of the G-force meter when accel assist is off.
-fn draw_accel_disabled_note(cr: &gtk::cairo::Context, cx: f64, cy: f64, size: f64) {
-    cr.select_font_face("Sans", gtk::cairo::FontSlant::Italic, gtk::cairo::FontWeight::Normal);
-    let font_size = size * 0.038;
-    cr.set_font_size(font_size);
-    cr.set_source_rgba(0.55, 0.56, 0.60, 0.90);
-
-    let lines = [
-        "Accel assist off",
-        "Speed may feel less responsive",
-        "during rapid acceleration",
-    ];
-    let line_h = font_size * 1.5;
-    let total_h = line_h * (lines.len() as f64 - 1.0);
-    let mut y = cy - total_h / 2.0;
-    for line in &lines {
-        if let Ok(ext) = cr.text_extents(line) {
-            cr.move_to(cx - ext.width() / 2.0 - ext.x_bearing(), y);
-            cr.show_text(line).ok();
-        }
-        y += line_h;
-    }
-}
-
 fn draw_gforce_meter(
     gx: f64,
     gy: f64,
