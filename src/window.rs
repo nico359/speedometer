@@ -299,13 +299,30 @@ mod imp {
                         if dt_s <= 0.0 || dt_s > 0.5 { continue; }
 
                         let sign = imp.accel_sign.get();
-                        if sign == 0.0 || data.linear_ms2 < 0.3 { continue; }
+                        if sign == 0.0 { continue; }
+
+                        // Use only the longitudinal component (forward/back axis) for
+                        // fusion — bumps hit mostly the Z axis and bleed into the total
+                        // magnitude, so using total linear_ms2 makes every pothole spike
+                        // the needle. accel_y_ms2 is already gravity-removed Y only.
+                        let fwd_ms2 = data.accel_y_ms2.abs();
+
+                        // Threshold: ignore anything below 0.8 m/s² on the forward axis.
+                        // This filters road vibration, gentle curves and sensor noise.
+                        // Only meaningful acceleration/braking events pass through.
+                        const THRESHOLD: f64 = 0.8;
+
+                        if fwd_ms2 < THRESHOLD {
+                            // Below threshold: decay delta back toward 0 so stale
+                            // negative corrections don't keep the speed artificially low.
+                            let decay = imp.accel_delta.get() * 0.92_f64.powf(dt_s / 0.08);
+                            imp.accel_delta.set(decay);
+                            continue;
+                        }
 
                         // Gyro-based corner suppression.
                         // Below GYRO_LO rad/s: straight line → full accel weight.
                         // Above GYRO_HI rad/s: clear turn → suppress entirely.
-                        // 0.10 rad/s ≈ 6°/s  (gentle curve onset)
-                        // 0.30 rad/s ≈ 17°/s (definite intersection turn)
                         const GYRO_LO: f64 = 0.10;
                         const GYRO_HI: f64 = 0.30;
                         let weight = 1.0 - ((data.gyro_rads - GYRO_LO) / (GYRO_HI - GYRO_LO))
@@ -314,8 +331,8 @@ mod imp {
                         if weight < 0.01 { continue; }
 
                         // Convert: m/s² × s × weight × 3.6 → km/h change
-                        let delta_kmh = data.linear_ms2 * dt_s * sign * weight * 3.6;
-                        let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-30.0, 30.0);
+                        let delta_kmh = fwd_ms2 * dt_s * sign * weight * 3.6;
+                        let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-20.0, 20.0);
                         imp.accel_delta.set(new_delta);
 
                         let fused = (imp.accel_base_speed.get() + new_delta).max(0.0);
