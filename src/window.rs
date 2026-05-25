@@ -283,9 +283,10 @@ mod imp {
                         let imp = win.imp();
 
                     // Always update G-force display regardless of GPS or toggle state.
+                    // Phone is mounted upright: X = lateral, Z = longitudinal (forward/back).
                     const G: f64 = 9.81;
                     imp.gforce_x_raw.set(data.accel_x_ms2 / G);
-                    imp.gforce_y_raw.set(data.accel_y_ms2 / G);
+                    imp.gforce_y_raw.set(-data.accel_z_ms2 / G); // negated: forward accel = positive G
 
                     // Fusion requires a GPS fix and the IMU assist toggle to be enabled.
                     if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
@@ -305,10 +306,11 @@ mod imp {
                         if sign == 0.0 { continue; }
 
                         // Use only the longitudinal component (forward/back axis) for
-                        // fusion — bumps hit mostly the Z axis and bleed into the total
-                        // magnitude, so using total linear_ms2 makes every pothole spike
-                        // the needle. accel_y_ms2 is already gravity-removed Y only.
-                        let fwd_ms2 = data.accel_y_ms2.abs();
+                        // fusion. Phone is mounted upright in the car, so the Z axis
+                        // (into/out of screen) is forward/back; Y is vertical (gravity axis)
+                        // and X is lateral. Bumps are mostly on Y (gravity-removed ≈ small),
+                        // cornering is on X (suppressed by gyro threshold).
+                        let fwd_ms2 = data.accel_z_ms2.abs();
 
                         // Threshold: ignore anything below 0.8 m/s² on the forward axis.
                         // This filters road vibration, gentle curves and sensor noise.
@@ -362,7 +364,7 @@ mod imp {
                     imp.speed_displayed.set((displayed + new_vel * DT).max(0.0));
 
                     // G-force display smoothing (independent of speed fusion toggle).
-                    const GFORCE_ALPHA: f64 = 0.25;
+                    const GFORCE_ALPHA: f64 = 0.5;
                     let gx_disp = imp.gforce_x.get();
                     let gy_disp = imp.gforce_y.get();
                     imp.gforce_x.set(gx_disp + (imp.gforce_x_raw.get() - gx_disp) * GFORCE_ALPHA);

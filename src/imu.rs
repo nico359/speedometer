@@ -26,14 +26,18 @@ pub struct ImuData {
     /// Sensor timestamp in microseconds (from sensorfw accelerometer).
     pub timestamp_us: u64,
     /// Magnitude of linear acceleration in m/s² after gravity removal (≥ 0).
-    /// Used by the speed fusion logic.
+    #[allow(dead_code)]
     pub linear_ms2: f64,
     /// Raw X component of linear acceleration in m/s² (gravity removed).
-    /// In the phone's sensor frame: typically lateral (right = positive).
+    /// Phone mounted upright: lateral (right = positive).
     pub accel_x_ms2: f64,
     /// Raw Y component of linear acceleration in m/s² (gravity removed).
-    /// In the phone's sensor frame: typically longitudinal (forward = positive).
+    /// Phone mounted upright: vertical axis (gravity residual — not used for fusion).
+    #[allow(dead_code)]
     pub accel_y_ms2: f64,
+    /// Raw Z component of linear acceleration in m/s² (gravity removed).
+    /// Phone mounted upright: longitudinal (forward = positive). Used for fusion and G-meter.
+    pub accel_z_ms2: f64,
     /// Total angular velocity in rad/s from the most recent gyroscope sample.
     /// Used to suppress accel integration during cornering.
     pub gyro_rads: f64,
@@ -203,6 +207,7 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
             linear_ms2,
             accel_x_ms2: lx,
             accel_y_ms2: ly,
+            accel_z_ms2: lz,
             gyro_rads,
         }).is_err() {
             break; // receiver dropped — UI is gone
