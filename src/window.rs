@@ -36,11 +36,13 @@ const START_DEG: f64 = 150.0;
 /// Total angular sweep of the dial (240° covers 8-o'clock → top → 4-o'clock).
 const SWEEP_DEG: f64 = 240.0;
 
-/// EMA smoothing factor per 16 ms tick for acceleration (speed rising).
-const EMA_ALPHA_UP: f64 = 0.25;
+/// Spring stiffness: controls how fast the needle accelerates toward the target.
+/// ω₀ = sqrt(SPRING_K) ≈ 8.9 rad/s → natural period ≈ 0.7 s.
+const SPRING_K: f64 = 80.0;
 
-/// EMA smoothing factor per 16 ms tick for deceleration (speed falling).
-const EMA_ALPHA_DOWN: f64 = 0.25;
+/// Spring damping: 2·√K·0.75 ≈ slightly underdamped — fast response with a
+/// barely-perceptible settle, like a real analogue pointer.
+const SPRING_D: f64 = 13.4;
 
 // ── Subclass ─────────────────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ mod imp {
         // Speed needle animation state (exponential moving average)
         pub speed_displayed: Cell<f64>,  // current smoothed value drawn on screen
         pub speed_target:    Cell<f64>,  // latest value from GPS
+        pub needle_velocity: Cell<f64>,  // spring velocity (km/h per second)
 
         // Time-to-fix tracking
         pub search_start_us: Cell<i64>,  // glib::monotonic_time() when search began
@@ -346,10 +349,17 @@ mod imp {
             glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
                 if let Some(win) = win_weak3.upgrade() {
                     let imp = win.imp();
+                    // Spring-damped needle: acceleration = K·error − D·velocity.
+                    // Slightly underdamped (ratio ≈ 0.75) so the needle swings in
+                    // fast and settles with a barely-perceptible analogue overshoot.
+                    const DT: f64 = 0.016;
                     let displayed = imp.speed_displayed.get();
                     let target    = imp.speed_target.get();
-                    let alpha = if target < displayed { EMA_ALPHA_DOWN } else { EMA_ALPHA_UP };
-                    imp.speed_displayed.set(displayed + (target - displayed) * alpha);
+                    let vel       = imp.needle_velocity.get();
+                    let accel     = SPRING_K * (target - displayed) - SPRING_D * vel;
+                    let new_vel   = vel + accel * DT;
+                    imp.needle_velocity.set(new_vel);
+                    imp.speed_displayed.set((displayed + new_vel * DT).max(0.0));
 
                     // G-force display smoothing (independent of speed fusion toggle).
                     const GFORCE_ALPHA: f64 = 0.25;
