@@ -82,7 +82,7 @@ mod imp {
         pub accel_base_speed: Cell<f64>,  // GPS speed at last fix (km/h)
         pub accel_delta:      Cell<f64>,  // integrated Δv since last GPS fix (km/h)
         pub accel_sign:       Cell<f64>,  // +1.0 accel, −1.0 decel, 0.0 unknown
-        pub accel_last_ts:    Cell<u64>,  // timestamp of most recent accel sample (µs)
+        pub accel_last_ts:    Cell<i64>,  // glib::monotonic_time() at last accel sample (µs)
         pub accel_has_gps:    Cell<bool>, // true once GPS has delivered a valid fix
         pub gps_prev_speed:   Cell<f64>,  // speed from previous GPS update (km/h)
         pub gps_prev_heading: Cell<f64>,  // GPS COG from previous fix (degrees); NAN = unknown
@@ -135,14 +135,18 @@ mod imp {
             });
             obj.add_action(&action_unit);
 
-            // Stateful toggle action for accelerometer assist (default: off).
-            self.accel_enabled.set(false);
+            // Stateful toggle action for accelerometer assist.
+            // Load persisted value from GSettings (default: false).
+            let settings = gio::Settings::new("io.github.nico359.speedometer");
+            let saved_accel = settings.boolean("accel-enabled");
+            self.accel_enabled.set(saved_accel);
             let action_accel = gio::SimpleAction::new_stateful(
                 "accel-enabled",
                 None,
-                &false.to_variant(),
+                &saved_accel.to_variant(),
             );
             let win_weak_ac = obj.downgrade();
+            let settings_ac = settings.clone();
             action_accel.connect_activate(move |action, _| {
                 if let Some(win) = win_weak_ac.upgrade() {
                     let current = action.state()
@@ -156,6 +160,7 @@ mod imp {
                         action.set_state(&false.to_variant());
                         imp.accel_enabled.set(false);
                         imp.accel_delta.set(0.0);
+                        settings_ac.set_boolean("accel-enabled", false).ok();
                         return;
                     }
 
@@ -171,11 +176,13 @@ mod imp {
                     let action_weak = glib::WeakRef::new();
                     action_weak.set(Some(action));
                     let win_weak2 = win.downgrade();
+                    let settings2 = settings_ac.clone();
                     dialog.connect_response(None, move |_, response| {
                         if response == "enable" {
                             if let (Some(a), Some(w)) = (action_weak.upgrade(), win_weak2.upgrade()) {
                                 a.set_state(&true.to_variant());
                                 w.imp().accel_enabled.set(true);
+                                settings2.set_boolean("accel-enabled", true).ok();
                             }
                         }
                     });
@@ -295,9 +302,11 @@ mod imp {
             });
 
             // IMU channel: fills in speed between GPS fixes with gyro-aided
-            // corner suppression.
+            // corner suppression.  Capacity 1: the IMU thread uses try_send and
+            // drops samples when the UI is busy rather than blocking the sensor
+            // poll loop.  We only ever care about the most recent reading anyway.
             let (imu_sender, imu_receiver) =
-                async_channel::bounded::<crate::imu::ImuData>(4);
+                async_channel::bounded::<crate::imu::ImuData>(1);
 
             crate::imu::start_imu_watching(imu_sender);
 
@@ -315,16 +324,17 @@ mod imp {
 
                     // Fusion requires a GPS fix and the IMU assist toggle to be enabled.
                     if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
-                            imp.accel_last_ts.set(data.timestamp_us);
+                            imp.accel_last_ts.set(0); // reset so dt is clean on re-enable
                             continue;
                         }
 
+                        let now_us = glib::monotonic_time();
                         let last_ts = imp.accel_last_ts.get();
-                        imp.accel_last_ts.set(data.timestamp_us);
+                        imp.accel_last_ts.set(now_us);
 
                         if last_ts == 0 { continue; }
 
-                        let dt_s = data.timestamp_us.saturating_sub(last_ts) as f64 / 1_000_000.0;
+                        let dt_s = (now_us - last_ts).max(0) as f64 / 1_000_000.0;
                         if dt_s <= 0.0 || dt_s > 0.5 { continue; }
 
                         let sign = imp.accel_sign.get();
@@ -389,7 +399,7 @@ mod imp {
                     imp.speed_displayed.set((displayed + new_vel * DT).max(0.0));
 
                     // G-force display smoothing (independent of speed fusion toggle).
-                    const GFORCE_ALPHA: f64 = 0.5;
+                    const GFORCE_ALPHA: f64 = 0.50;
                     let gx_disp = imp.gforce_x.get();
                     let gy_disp = imp.gforce_y.get();
                     imp.gforce_x.set(gx_disp + (imp.gforce_x_raw.get() - gx_disp) * GFORCE_ALPHA);

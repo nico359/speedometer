@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <schemalist gettext-domain="speedometer">
 	<schema id="io.github.nico359.speedometer" path="/io/github/nico359/speedometer/">
+		<key name="accel-enabled" type="b">
+			<default>false</default>
+			<summary>Accelerometer assist enabled</summary>
+			<description>Whether IMU-assisted speed fusion and G-force meter are enabled.</description>
+		</key>
 	</schema>
 </schemalist>

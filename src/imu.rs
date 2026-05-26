@@ -23,8 +23,6 @@ use zbus::Connection;
 
 /// Combined IMU update forwarded to the UI thread on every accelerometer sample.
 pub struct ImuData {
-    /// Sensor timestamp in microseconds (from sensorfw accelerometer).
-    pub timestamp_us: u64,
     /// Magnitude of linear acceleration in m/s² after gravity removal (≥ 0).
     #[allow(dead_code)]
     pub linear_ms2: f64,
@@ -57,7 +55,7 @@ pub fn start_imu_watching(sender: Sender<ImuData>) {
                 if let Err(e) = watch_imu(&sender).await {
                     eprintln!("IMU watcher error: {e}");
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         });
     });
@@ -129,12 +127,16 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
     // dataAvailable D-Bus signals. Poll the xyz property directly instead.
     // 80 ms interval → ~12.5 Hz, matches the sensor's default data rate.
     const POLL_MS: u64 = 80;
-    const ALPHA: f64 = 0.926;         // LP filter α for gravity estimation
+    const ALPHA: f64 = 0.990;         // LP filter α for gravity estimation (~8s time constant at 80ms poll)
     const MG_TO_MS2: f64 = 9.81 / 1000.0;
     const MDPS_TO_RADS: f64 = std::f64::consts::PI / 180_000.0;
+    // If the sensor returns the same timestamp for this many consecutive polls
+    // (~2 seconds), the sensorfw session has gone stale — break to restart.
+    const STUCK_LIMIT: u32 = 25;
 
     let mut gravity: Option<(f64, f64, f64)> = None;
-    let mut last_ts: u64 = 0;
+    let mut last_accel_ts: u64 = 0;
+    let mut stuck_count: u32 = 0;
     let _ = pid; // suppress unused warning if pid isn't used elsewhere
 
     loop {
@@ -180,9 +182,18 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
             Err(_) => continue,
         };
 
-        // Skip if the sensor timestamp hasn't advanced (stale read).
-        if ts == last_ts { continue; }
-        last_ts = ts;
+        // Stuck-sensor detection: if the timestamp hasn't advanced for ~2 seconds
+        // the sensorfw session has gone stale. Break to trigger a full restart.
+        if ts == last_accel_ts {
+            stuck_count += 1;
+            if stuck_count >= STUCK_LIMIT {
+                eprintln!("IMU: sensor timestamp frozen for {}+ polls, restarting session", STUCK_LIMIT);
+                return Err(zbus::Error::Failure("sensor stuck".into()));
+            }
+        } else {
+            last_accel_ts = ts;
+            stuck_count = 0;
+        }
 
         let (x, y, z) = (x_mg * MG_TO_MS2, y_mg * MG_TO_MS2, z_mg * MG_TO_MS2);
 
@@ -202,15 +213,17 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
         let (lx, ly, lz) = (x - g.0, y - g.1, z - g.2);
         let linear_ms2 = (lx * lx + ly * ly + lz * lz).sqrt();
 
-        if sender.send_blocking(ImuData {
-            timestamp_us: ts,
+        let data = ImuData {
             linear_ms2,
             accel_x_ms2: lx,
             accel_y_ms2: ly,
             accel_z_ms2: lz,
             gyro_rads,
-        }).is_err() {
-            break; // receiver dropped — UI is gone
+        };
+        match sender.try_send(data) {
+            Ok(_) => {}
+            Err(async_channel::TrySendError::Full(_)) => {} // UI busy — drop this sample
+            Err(async_channel::TrySendError::Closed(_)) => break, // receiver dropped — UI is gone
         }
     }
 
