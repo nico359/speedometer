@@ -130,13 +130,9 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
     const ALPHA: f64 = 0.990;         // LP filter α for gravity estimation (~8s time constant at 80ms poll)
     const MG_TO_MS2: f64 = 9.81 / 1000.0;
     const MDPS_TO_RADS: f64 = std::f64::consts::PI / 180_000.0;
-    // If the sensor returns the same timestamp for this many consecutive polls
-    // (~2 seconds), the sensorfw session has gone stale — break to restart.
-    const STUCK_LIMIT: u32 = 25;
 
     let mut gravity: Option<(f64, f64, f64)> = None;
     let mut last_accel_ts: u64 = 0;
-    let mut stuck_count: u32 = 0;
     let _ = pid; // suppress unused warning if pid isn't used elsewhere
 
     loop {
@@ -182,18 +178,11 @@ async fn watch_imu(sender: &Sender<ImuData>) -> zbus::Result<()> {
             Err(_) => continue,
         };
 
-        // Stuck-sensor detection: if the timestamp hasn't advanced for ~2 seconds
-        // the sensorfw session has gone stale. Break to trigger a full restart.
+        // Skip duplicate timestamps — sensor hasn't updated yet, hold last value.
         if ts == last_accel_ts {
-            stuck_count += 1;
-            if stuck_count >= STUCK_LIMIT {
-                eprintln!("IMU: sensor timestamp frozen for {}+ polls, restarting session", STUCK_LIMIT);
-                return Err(zbus::Error::Failure("sensor stuck".into()));
-            }
-        } else {
-            last_accel_ts = ts;
-            stuck_count = 0;
+            continue;
         }
+        last_accel_ts = ts;
 
         let (x, y, z) = (x_mg * MG_TO_MS2, y_mg * MG_TO_MS2, z_mg * MG_TO_MS2);
 
