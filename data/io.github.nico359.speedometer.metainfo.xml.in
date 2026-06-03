@@ -38,7 +38,37 @@
   <launchable type="desktop-id">io.github.nico359.speedometer.desktop</launchable>
   <content_rating type="oars-1.1" />
 
+  <screenshots>
+        <screenshot type="default">
+            <caption>Speedometer portrait</caption>
+            <image>https://raw.githubusercontent.com/nico359/speedometer/refs/heads/main/data/portrait.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Speedometer with G-Force meter</caption>
+            <image>https://raw.githubusercontent.com/nico359/speedometer/refs/heads/main/data/accelerometer.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Only network based location</caption>
+            <image>https://raw.githubusercontent.com/nico359/speedometer/refs/heads/main/data/no_fix.png</image>
+        </screenshot>
+        <screenshot>
+            <caption>Speedometer landscape</caption>
+            <image>https://raw.githubusercontent.com/nico359/speedometer/refs/heads/main/data/landscape.png</image>
+        </screenshot>
+    </screenshots>
+
+
   <releases>
+    <release version="0.3.0" date="2026-06-03">
+      <description translate="no">
+        <p>Attempt at sensor fusion.</p>
+        <ul>
+          <li>You can enable the accelerometer assist now via the menu</li>
+          <li>This will display a G-Force meter and attempt to use that information to make the dial more responsive</li>
+          <li>Also added spring dampening to the dial</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-05-18">
       <description translate="no">
         <p>Landscape and some other things.</p>
