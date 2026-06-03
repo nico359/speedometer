@@ -15,9 +15,12 @@ For informational purposes only. Speed readings are GPS-based and approximate - 
 - Switch between km/h and mph (top right menu button)
 - Somewhat adaptive design for desktop usage if you happen to have a compatible GPS receiver
 
-## To be improved
+## Screenshots
 
- - Accelerometer assisted speed because right now it can be a little delayed when rapidly accelerating or braking
+![Speedometer portrait](data/portrait.png)
+![Accelerometer assist and G-Force meter](data/accelerometer.png)
+![Network based location](data/no_fix.png)
+![Speedometer landscape](data/landscape.png)
 
 ## Credits
 
