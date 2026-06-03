@@ -350,7 +350,7 @@ mod imp {
                         // Threshold: ignore anything below 0.8 m/s² on the forward axis.
                         // This filters road vibration, gentle curves and sensor noise.
                         // Only meaningful acceleration/braking events pass through.
-                        const THRESHOLD: f64 = 0.8;
+                        const THRESHOLD: f64 = 0.3;
 
                         if fwd_ms2 < THRESHOLD {
                             // Below threshold: decay delta back toward 0 so stale
