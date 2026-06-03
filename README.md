@@ -2,6 +2,10 @@
 
 Very simple Speedometer App built with GTK4/libadwaita and Rust. Aimed at mobile Linux devices such as the Furiphone or Pinephone.
 
+## Disclaimer
+
+For informational purposes only. Speed readings are GPS-based and approximate - not legally certified for any purpose. Do not use while driving. No warranty is given for accuracy or fitness for any particular purpose.
+
 ## Features
 
 - Accuracy indicator that turns green once there is an actual GPS fix based on accuracy (because geoclue doesnt tell if it is just network or actual GPS location to my knowledge)
