@@ -278,6 +278,10 @@ mod imp {
 
             let win_weak_a = obj.downgrade();
             glib::MainContext::default().spawn_local(async move {
+                // Rolling EMA of raw Z to filter road vibration before integration.
+                // alpha=0.33 ≈ 5-sample window; vibration noise averages out while
+                // sustained acceleration/braking trends survive.
+                let mut z_ema: f64 = 0.0;
                 while let Ok(data) = imu_receiver.recv().await {
                     if let Some(win) = win_weak_a.upgrade() {
                         let imp = win.imp();
@@ -291,6 +295,7 @@ mod imp {
                     // Fusion requires a GPS fix and the IMU assist toggle to be enabled.
                     if !imp.accel_has_gps.get() || !imp.accel_enabled.get() {
                             imp.accel_last_ts.set(0); // reset so dt is clean on re-enable
+                            z_ema = 0.0;
                             continue;
                         }
 
@@ -311,13 +316,14 @@ mod imp {
                         }
 
                         // Use only the longitudinal component (forward/back axis).
-                        // -accel_z_ms2: negative Z = forward in phone-upright mount,
-                        // so negating gives positive values when accelerating forward
-                        // and negative when braking — no GPS-derived sign needed.
-                        let fwd_ms2 = -data.accel_z_ms2;
+                        // Smooth with a short EMA (~5-sample window) to cancel road
+                        // vibration (~±1.5 m/s² at highway speed) while keeping real
+                        // acceleration/braking trends. -z = forward (upright phone).
+                        const Z_EMA_ALPHA: f64 = 0.50;
+                        z_ema = Z_EMA_ALPHA * data.accel_z_ms2 + (1.0 - Z_EMA_ALPHA) * z_ema;
+                        let fwd_ms2 = -z_ema;
 
-                        // Threshold: ignore anything below 0.3 m/s² on the forward axis.
-                        // This filters road vibration, gentle curves and sensor noise.
+                        // Threshold: ignore anything below 0.3 m/s² on the smoothed axis.
                         const THRESHOLD: f64 = 0.3;
 
                         if fwd_ms2.abs() < THRESHOLD {
@@ -339,7 +345,7 @@ mod imp {
 
                         // Convert: m/s² × s × weight × 3.6 → km/h change
                         let delta_kmh = fwd_ms2 * dt_s * weight * 3.6;
-                        let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-20.0, 20.0);
+                        let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-10.0, 10.0);
                         imp.accel_delta.set(new_delta);
 
                         let fused = (imp.accel_base_speed.get() + new_delta).max(0.0);
