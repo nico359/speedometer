@@ -81,11 +81,8 @@ mod imp {
         // being wrongly integrated as braking during turns.
         pub accel_base_speed: Cell<f64>,  // GPS speed at last fix (km/h)
         pub accel_delta:      Cell<f64>,  // integrated Δv since last GPS fix (km/h)
-        pub accel_sign:       Cell<f64>,  // +1.0 accel, −1.0 decel, 0.0 unknown
         pub accel_last_ts:    Cell<i64>,  // glib::monotonic_time() at last accel sample (µs)
         pub accel_has_gps:    Cell<bool>, // true once GPS has delivered a valid fix
-        pub gps_prev_speed:   Cell<f64>,  // speed from previous GPS update (km/h)
-        pub gps_prev_heading: Cell<f64>,  // GPS COG from previous fix (degrees); NAN = unknown
         pub accel_enabled:    Cell<bool>, // whether IMU assist is active (user toggle)
 
         // G-force display state.
@@ -194,8 +191,6 @@ mod imp {
             // Start the search timer immediately on construction.
             self.search_start_us.set(glib::monotonic_time());
             self.time_to_fix_s.set(-1);
-            // Heading unknown until first GPS fix with COG data.
-            self.gps_prev_heading.set(f64::NAN);
 
             // Wire up the DrawingArea draw callback.
             let win_weak = obj.downgrade();
@@ -257,35 +252,6 @@ mod imp {
                         imp.prev_has_fix.set(good_fix);
 
                         // Update IMU fusion anchor on every GPS fix.
-                        // Use GPS COG (Course Over Ground) to check if heading
-                        // changed significantly between fixes.  COG is purely
-                        // Doppler-derived — no magnetometer/compass involved.
-                        // If we turned ≥ 15° the speed delta is unreliable for
-                        // sign detection (centripetal effect), so we keep the
-                        // current sign rather than flipping it wrongly.
-                        let prev_gps = imp.gps_prev_speed.get();
-                        let prev_hdg = imp.gps_prev_heading.get();
-                        let cur_hdg  = data.heading_deg.unwrap_or(f64::NAN);
-
-                        let heading_stable = if prev_hdg.is_nan() || cur_hdg.is_nan() {
-                            // No heading data — fall back to old behaviour.
-                            true
-                        } else {
-                            // Shortest angular distance between two bearings.
-                            let diff = ((cur_hdg - prev_hdg + 540.0) % 360.0) - 180.0;
-                            diff.abs() < 15.0
-                        };
-
-                        let sign = if heading_stable && data.speed_kmh - prev_gps > 0.5 {
-                            1.0   // accelerating on a straight road
-                        } else if heading_stable && prev_gps - data.speed_kmh > 0.5 {
-                            -1.0  // braking on a straight road
-                        } else {
-                            imp.accel_sign.get() // turning or cruising — keep current sign
-                        };
-                        imp.accel_sign.set(sign);
-                        imp.gps_prev_speed.set(data.speed_kmh);
-                        imp.gps_prev_heading.set(cur_hdg);
                         imp.accel_base_speed.set(data.speed_kmh);
                         imp.accel_delta.set(0.0);
                         imp.accel_has_gps.set(good_fix);
@@ -337,24 +303,25 @@ mod imp {
                         let dt_s = (now_us - last_ts).max(0) as f64 / 1_000_000.0;
                         if dt_s <= 0.0 || dt_s > 0.5 { continue; }
 
-                        let sign = imp.accel_sign.get();
-                        if sign == 0.0 { continue; }
+                        // GPS must show some speed before we trust accel integration.
+                        // At standstill GPS has priority — don't let vibration creep in.
+                        if imp.accel_base_speed.get() < 2.0 {
+                            imp.accel_delta.set(0.0);
+                            continue;
+                        }
 
-                        // Use only the longitudinal component (forward/back axis) for
-                        // fusion. Phone is mounted upright in the car, so the Z axis
-                        // (into/out of screen) is forward/back; Y is vertical (gravity axis)
-                        // and X is lateral. Bumps are mostly on Y (gravity-removed ≈ small),
-                        // cornering is on X (suppressed by gyro threshold).
-                        let fwd_ms2 = data.accel_z_ms2.abs();
+                        // Use only the longitudinal component (forward/back axis).
+                        // -accel_z_ms2: negative Z = forward in phone-upright mount,
+                        // so negating gives positive values when accelerating forward
+                        // and negative when braking — no GPS-derived sign needed.
+                        let fwd_ms2 = -data.accel_z_ms2;
 
-                        // Threshold: ignore anything below 0.8 m/s² on the forward axis.
+                        // Threshold: ignore anything below 0.3 m/s² on the forward axis.
                         // This filters road vibration, gentle curves and sensor noise.
-                        // Only meaningful acceleration/braking events pass through.
                         const THRESHOLD: f64 = 0.3;
 
-                        if fwd_ms2 < THRESHOLD {
-                            // Below threshold: decay delta back toward 0 so stale
-                            // negative corrections don't keep the speed artificially low.
+                        if fwd_ms2.abs() < THRESHOLD {
+                            // Below threshold: decay delta back toward 0.
                             let decay = imp.accel_delta.get() * 0.92_f64.powf(dt_s / 0.08);
                             imp.accel_delta.set(decay);
                             continue;
@@ -371,7 +338,7 @@ mod imp {
                         if weight < 0.01 { continue; }
 
                         // Convert: m/s² × s × weight × 3.6 → km/h change
-                        let delta_kmh = fwd_ms2 * dt_s * sign * weight * 3.6;
+                        let delta_kmh = fwd_ms2 * dt_s * weight * 3.6;
                         let new_delta = (imp.accel_delta.get() + delta_kmh).clamp(-20.0, 20.0);
                         imp.accel_delta.set(new_delta);
 
