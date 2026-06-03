@@ -135,6 +135,13 @@ impl SpeedometerApplication {
             &["Movens by wilfridd https://open-store.io/app/movens.wilfridd"],
         );
 
+        about.add_legal_section(
+            "Disclaimer",
+            None,
+            gtk::License::Custom,
+            Some("For informational purposes only. Speed readings are GPS-based and approximate - not legally certified for any purpose. Do not use while driving. No warranty is given for accuracy or fitness for any particular purpose."),
+        );
+
         about.present(Some(&window));
     }
 }

@@ -9,6 +9,7 @@
   <description>
     <p>Speedometer is a GPS-based speedometer designed for mobile Linux devices. It displays your current speed on an analogue dial with a colour-coded arc, a large digital readout, altitude and also coordinates - all sourced from the XDG Location Portal.</p>
     <p>The GPS accuracy indicator shows whether the location fix is good enough to determine speed, making it clear when only a network-based position is available (yellow dot).</p>
+    <p>Disclaimer: For informational purposes only. Speed readings are GPS-based and approximate - not legally certified for any purpose. Do not use while driving.</p>
   </description>
 
   <icon type="stock">io.github.nico359.speedometer</icon>
