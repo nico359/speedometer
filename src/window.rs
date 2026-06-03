@@ -891,8 +891,8 @@ fn draw_gforce_meter(
 
     // ── Dot ────────────────────────────────────────────────────────────────
     let total_g = (gx * gx + gy * gy).sqrt();
-    let dot_x = cx + gx.clamp(-1.0, 1.0) * r;
-    let dot_y = cy - gy.clamp(-1.0, 1.0) * r;  // screen Y inverted
+    let dot_x = cx - gx.clamp(-1.0, 1.0) * r;
+    let dot_y = cy + gy.clamp(-1.0, 1.0) * r;
 
     // Colour: green (low) → yellow (medium) → red (high), threshold at 0.5 G.
     let (red, green) = if total_g <= 0.5 {
